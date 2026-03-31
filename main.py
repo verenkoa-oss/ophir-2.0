@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -236,10 +237,13 @@ async def archive_aircraft():
 @app.get("/web/{file_path:path}")
 async def serve_web(file_path: str):
     """Serve static files from the web directory."""
-    full_path = os.path.join("web", file_path)
-    if not os.path.exists(full_path):
+    web_root = Path("web").resolve()
+    requested = (web_root / file_path).resolve()
+    if not requested.is_relative_to(web_root):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not requested.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(full_path)
+    return FileResponse(str(requested))
 
 
 # ---------------------------------------------------------------------------
