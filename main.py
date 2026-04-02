@@ -4,11 +4,15 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
+import json
 import logging
 from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import uvicorn
 import os
 
@@ -25,14 +29,31 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
 from core.sdr_real import SDRReader
 from core.signal_classifier import get_classifier
 from core.threat_detector import get_detector
+from core.llm import LLMAnalyzer
 
 sdr_manager = None
 classifier = None
 detector = None
+llm_analyzer = None
+
+# ---- Active WebSocket connections for live push ----
+_ws_clients: list[WebSocket] = []
+
+# ---- Request/response models ----
+class AnalyzeRequest(BaseModel):
+    hex_code: str
+    callsign: Optional[str] = None
+    altitude: Optional[float] = None
+    ground_speed: Optional[float] = None
+    track: Optional[float] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    rssi: Optional[float] = None
+    anomaly_type: Optional[str] = "GENERAL"
 
 @app.on_event("startup")
 async def startup():
-    global sdr_manager, classifier, detector
+    global sdr_manager, classifier, detector, llm_analyzer
     logger.info("="*80)
     logger.info("🚀 OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR | STARTING...")
     try:
@@ -42,6 +63,8 @@ async def startup():
         logger.info("✅ AI Signal Classifier LOADED")
         detector = get_detector()
         logger.info("✅ Threat Detector INITIALIZED")
+        llm_analyzer = LLMAnalyzer()
+        logger.info("✅ LLM Analyzer READY")
         logger.info("="*80)
     except Exception as e:
         logger.error(f"❌ Startup error: {e}")
@@ -143,6 +166,161 @@ async def get_dashboard():
         return FileResponse("web/dashboard.html", media_type="text/html")
     else:
         raise HTTPException(status_code=404, detail="Dashboard not found")
+
+# ======================================================================
+# API v1 — Archive
+# ======================================================================
+
+@app.get("/api/v1/archive/aircraft")
+async def api_archive_aircraft():
+    """
+    Return the full aircraft archive as a list of dicts suited for the
+    web table in web/archive.html and web/index.html.
+
+    Each entry: {hex, callsign, type, mil, pos}
+
+    Data is loaded from the SQLite aircraft_archive table (populated by
+    db/import_archive.py) with a fallback to data/aircraft_archive.json.
+    """
+    try:
+        import sqlite3
+        db_path = Path(__file__).parent / "db" / "ophir.db"
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT hex, callsign, type, military AS mil, "
+                "position_available AS pos FROM aircraft_archive"
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            if rows:
+                # Normalize boolean fields (SQLite stores 0/1)
+                for row in rows:
+                    row["mil"] = bool(row["mil"])
+                    row["pos"] = bool(row["pos"])
+                return rows
+    except Exception as e:
+        logger.warning(f"DB archive read failed, falling back to JSON: {e}")
+
+    # JSON fallback
+    json_path = Path(__file__).parent / "data" / "aircraft_archive.json"
+    if json_path.exists():
+        with open(json_path) as f:
+            data = json.load(f)
+        records = data.get("records", data) if isinstance(data, dict) else data
+        result = []
+        for r in records:
+            result.append({
+                "hex": r.get("hex", r.get("hex_code", "")),
+                "callsign": r.get("callsign", ""),
+                "type": r.get("type", r.get("aircraft_type", "UNKN")),
+                "mil": bool(r.get("military", r.get("mil", False))),
+                "pos": bool(r.get("position_available", r.get("pos", False))),
+            })
+        return result
+
+    return []
+
+
+# ======================================================================
+# API v1 — LLM Analysis
+# ======================================================================
+
+@app.post("/api/v1/analyze")
+async def api_analyze(req: AnalyzeRequest):
+    """
+    Analyse an aircraft via LLM (Ollama) with optional signal classification.
+
+    Body: AnalyzeRequest JSON.
+    Returns: {hex_code, classification, llm_analysis, anomaly_type}
+    """
+    aircraft_data = req.model_dump()
+
+    # Signal classification (synchronous — no I/O)
+    classification = None
+    if classifier:
+        try:
+            classification = classifier.classify(aircraft_data)
+        except Exception as e:
+            logger.warning(f"Classifier error for {req.hex_code}: {e}")
+
+    # LLM analysis (async I/O — may time out if Ollama is unavailable)
+    llm_result = "LLM not available"
+    if llm_analyzer:
+        try:
+            await llm_analyzer.init()
+            llm_result = await llm_analyzer.analyze_anomaly(
+                req.hex_code,
+                req.anomaly_type or "GENERAL",
+                aircraft_data,
+            )
+        except Exception as e:
+            logger.warning(f"LLM analysis error for {req.hex_code}: {e}")
+            llm_result = "LLM analysis failed"
+
+    return {
+        "hex_code": req.hex_code,
+        "classification": classification,
+        "llm_analysis": llm_result,
+        "anomaly_type": req.anomaly_type,
+        "analyzed_at": datetime.utcnow().isoformat(),
+    }
+
+
+# ======================================================================
+# API v1 — Live aircraft
+# ======================================================================
+
+@app.get("/api/v1/live/aircraft")
+async def api_live_aircraft():
+    """
+    Return all aircraft currently tracked by the SDR reader.
+    Each entry is the raw dict from sdr_manager.aircraft_dict.
+    """
+    if not sdr_manager:
+        return {"aircraft": [], "count": 0, "source": "none"}
+    aircraft_list = list(sdr_manager.aircraft_dict.values())
+    return {
+        "aircraft": aircraft_list,
+        "count": len(aircraft_list),
+        "source": "dump1090",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+# ======================================================================
+# WebSocket — live push
+# ======================================================================
+
+@app.websocket("/ws/live")
+async def ws_live(websocket: WebSocket):
+    """
+    WebSocket endpoint for live aircraft updates.
+    Sends the current aircraft list every second to connected clients.
+    """
+    await websocket.accept()
+    _ws_clients.append(websocket)
+    logger.info(f"WebSocket client connected. Total: {len(_ws_clients)}")
+    try:
+        import asyncio
+        while True:
+            aircraft_list = list(sdr_manager.aircraft_dict.values()) if sdr_manager else []
+            await websocket.send_json({
+                "type": "aircraft_update",
+                "aircraft": aircraft_list,
+                "count": len(aircraft_list),
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.warning(f"WebSocket error: {e}")
+    finally:
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
 
 if __name__ == "__main__":
     logger.info("🚀 Starting OPHIR 2.0 Server")
