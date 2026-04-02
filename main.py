@@ -4,11 +4,15 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
+import asyncio
+import json
 import logging
-from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, timezone
+from typing import Optional
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 import uvicorn
 import os
 
@@ -144,7 +148,123 @@ async def get_dashboard():
     else:
         raise HTTPException(status_code=404, detail="Dashboard not found")
 
-if __name__ == "__main__":
+
+# ---------------------------------------------------------------------------
+# v1 API endpoints
+# ---------------------------------------------------------------------------
+
+class AnalyzeRequest(BaseModel):
+    hex_code: str
+    anomaly_type: Optional[str] = "UNKNOWN"
+    aircraft_data: Optional[dict] = {}
+
+
+@app.post("/api/v1/analyze")
+async def analyze_aircraft(req: AnalyzeRequest):
+    """Analyse aircraft data with the local LLM."""
+    analysis_text = "Analysis unavailable"
+    try:
+        from core.llm import LLMAnalyzer
+        llm = LLMAnalyzer()
+        await llm.init()
+        raw = await llm.analyze_anomaly(
+            req.hex_code,
+            req.anomaly_type,
+            req.aircraft_data or {},
+        )
+        await llm.close()
+        # Only surface the result when it is clearly a successful LLM response
+        # (not an internal error message that may embed exception details).
+        if raw and not raw.startswith(("Error:", "Analysis failed", "Analysis timeout")):
+            analysis_text = raw
+    except Exception as exc:
+        logger.error("/api/v1/analyze error: %s", type(exc).__name__)
+    return {"hex_code": req.hex_code, "analysis": analysis_text, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@app.get("/api/v1/archive/aircraft")
+async def archive_aircraft():
+    """Return all aircraft stored in the database archive."""
+    try:
+        from core.database import db_manager
+        session = db_manager.get_sync_session()
+        try:
+            aircraft_list = db_manager.get_all_aircraft(session)
+            return {
+                "aircraft": [
+                    {
+                        "hex_code": ac.hex_code,
+                        "callsign": ac.callsign,
+                        "aircraft_type": ac.aircraft_type,
+                        "country": ac.country,
+                        "latitude": ac.latitude,
+                        "longitude": ac.longitude,
+                        "altitude": ac.altitude,
+                        "ground_speed": ac.ground_speed,
+                        "track": ac.track,
+                        "rssi": ac.rssi,
+                        "is_shadow": ac.is_shadow,
+                        "first_seen": ac.first_seen.isoformat() if ac.first_seen else None,
+                        "last_seen": ac.last_seen.isoformat() if ac.last_seen else None,
+                    }
+                    for ac in aircraft_list
+                ],
+                "count": len(aircraft_list),
+            }
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error(f"/api/v1/archive/aircraft error: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve archive")
+
+
+@app.get("/api/v1/live/aircraft")
+async def live_aircraft():
+    """Return currently tracked live aircraft."""
+    if not sdr_manager:
+        return {"aircraft": [], "count": 0, "status": "SDR not connected"}
+    aircraft_list = list(sdr_manager.aircraft_dict.values())
+    return {
+        "aircraft": aircraft_list,
+        "count": len(aircraft_list),
+        "status": "live",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# Active WebSocket connections
+_ws_clients: list[WebSocket] = []
+
+
+@app.websocket("/ws/live")
+async def websocket_live(websocket: WebSocket):
+    """WebSocket endpoint for real-time aircraft updates."""
+    await websocket.accept()
+    _ws_clients.append(websocket)
+    logger.info(f"WebSocket client connected ({len(_ws_clients)} total)")
+    try:
+        while True:
+            # Push current aircraft state every second
+            if sdr_manager:
+                payload = {
+                    "type": "aircraft_update",
+                    "aircraft": list(sdr_manager.aircraft_dict.values()),
+                    "count": len(sdr_manager.aircraft_dict),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            else:
+                payload = {"type": "waiting", "message": "SDR not connected"}
+            await websocket.send_text(json.dumps(payload))
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        _ws_clients.remove(websocket)
+        logger.info(f"WebSocket client disconnected ({len(_ws_clients)} total)")
+    except Exception as exc:
+        logger.error(f"WebSocket error: {exc}")
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
+
+
     logger.info("🚀 Starting OPHIR 2.0 Server")
     logger.info("📡 Listening on http://0.0.0.0:8080")
     uvicorn.run(app, host="0.0.0.0", port=8080, workers=1, log_level="info")
