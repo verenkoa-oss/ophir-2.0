@@ -74,7 +74,7 @@ class LLMAnalyzer:
             return "Analysis timeout"
         except Exception as e:
             logger.error(f"LLM analysis error: {e}")
-            return f"Error: {str(e)}"
+            return "Analysis error"
     
     def _build_prompt(self, hex_code: str, anomaly_type: str, aircraft_data: dict) -> str:
         """Build prompt for LLM"""
