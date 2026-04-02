@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OPHIR 2.0 | AEGIS-X | AIRSPACE MONITOR</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green: #00ff41;
+      --green-dim: #005c17;
+      --red: #ff3c3c;
+      --yellow: #ffd700;
+      --blue: #00cfff;
+      --bg: #000;
+      --panel: #0a0a0a;
+      --border: #1a3a1a;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--green);
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 13px;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    #header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 16px;
+      background: #000;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #header h1 { font-size: 15px; letter-spacing: 3px; color: var(--green); }
+    #header .status-bar { display: flex; gap: 20px; font-size: 12px; }
+    .badge { padding: 2px 8px; border: 1px solid; border-radius: 2px; }
+    .badge.ok  { border-color: var(--green); color: var(--green); }
+    .badge.err { border-color: var(--red);   color: var(--red);   }
+    .badge.warn{ border-color: var(--yellow); color: var(--yellow); }
+    #clock { color: var(--yellow); font-size: 12px; }
+
+    /* ── Main grid ── */
+    #main {
+      display: grid;
+      grid-template-columns: 1fr 420px;
+      grid-template-rows: 1fr;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* ── Left: map + oscilloscopes ── */
+    #left {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-right: 1px solid var(--border);
+    }
+
+    #map-container {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+    }
+    #map { width: 100%; height: 100%; background: #0a0a14; }
+
+    /* Map overlay label */
+    #map-label {
+      position: absolute; top: 8px; left: 8px; z-index: 1000;
+      background: rgba(0,0,0,0.75); border: 1px solid var(--green);
+      padding: 3px 8px; font-size: 11px; color: var(--green); pointer-events: none;
+    }
+
+    /* ── Oscilloscopes ── */
+    #oscilloscopes {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      height: 160px;
+      flex-shrink: 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .osc-panel {
+      position: relative;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .osc-panel:last-child { border-right: none; }
+
+    .osc-title {
+      position: absolute; top: 4px; left: 8px; z-index: 2;
+      font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+      pointer-events: none;
+    }
+    .osc-panel:first-child .osc-title { color: var(--blue); }
+    .osc-panel:last-child  .osc-title { color: #ff8c00; }
+
+    .osc-dbm {
+      position: absolute; top: 4px; right: 8px; z-index: 2;
+      font-size: 10px; pointer-events: none;
+    }
+
+    canvas.osc { display: block; width: 100%; height: 100%; }
+
+    /* ── Right sidebar ── */
+    #sidebar {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--panel);
+    }
+
+    /* Signal classification panel */
+    #signal-panel {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .panel-title {
+      font-size: 10px; letter-spacing: 2px;
+      color: var(--green); margin-bottom: 6px; text-transform: uppercase;
+    }
+    #signal-type-box {
+      display: flex; align-items: center; gap: 12px;
+    }
+    #sig-type {
+      font-size: 20px; font-weight: bold; letter-spacing: 2px;
+      color: var(--green); min-width: 90px;
+    }
+    #confidence-bar-wrap {
+      flex: 1;
+    }
+    .conf-label { font-size: 10px; color: #666; margin-bottom: 3px; }
+    .conf-bar-bg {
+      height: 8px; background: #111; border: 1px solid #333; border-radius: 2px;
+    }
+    #conf-bar {
+      height: 100%; width: 0%; background: var(--green);
+      border-radius: 2px; transition: width 0.5s;
+    }
+    #conf-pct { font-size: 11px; color: var(--green); margin-top: 2px; }
+
+    /* Threat */
+    #threat-box {
+      margin-top: 8px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #threat-status {
+      font-size: 13px; font-weight: bold; letter-spacing: 1px;
+    }
+
+    /* Aircraft list */
+    #aircraft-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    #ac-count { font-size: 10px; color: #666; margin-bottom: 4px; }
+    #aircraft-list {
+      flex: 1; overflow-y: auto; font-size: 11px;
+    }
+    #aircraft-list::-webkit-scrollbar { width: 4px; }
+    #aircraft-list::-webkit-scrollbar-thumb { background: #1a3a1a; }
+
+    .ac-row {
+      display: grid;
+      grid-template-columns: 60px 80px 70px 1fr;
+      gap: 4px;
+      padding: 3px 0;
+      border-bottom: 1px solid #111;
+      color: #aaa;
+    }
+    .ac-row .hex  { color: var(--yellow); }
+    .ac-row .call { color: var(--green); }
+    .ac-row .alt  { color: var(--blue); }
+    .ac-row .spd  { color: #aaa; }
+
+    /* ── Terminal ── */
+    #terminal-panel {
+      height: 180px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 8px 12px;
+      background: #050505;
+    }
+    .term-header {
+      display: flex; justify-content: space-between;
+      font-size: 10px; color: #555; margin-bottom: 4px; flex-shrink: 0;
+    }
+    #term-status { }
+    #terminal {
+      flex: 1;
+      overflow-y: auto;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #33ff33;
+    }
+    #terminal::-webkit-scrollbar { width: 4px; }
+    #terminal::-webkit-scrollbar-thumb { background: #1a3a1a; }
+
+    .term-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .term-line .ts  { color: #444; margin-right: 8px; }
+    .term-line .msg { color: #33ff33; }
+    .term-line.adsb .msg { color: #00ff88; }
+    .term-empty { color: #333; font-style: italic; }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div id="header">
+  <h1>[ OPHIR 2.0 | AEGIS-X ]</h1>
+  <div class="status-bar">
+    <span id="badge-sdr" class="badge err">SDR: OFFLINE</span>
+    <span id="badge-sig" class="badge warn">SIG: --</span>
+    <span id="badge-ac"  class="badge ok">AC: 0</span>
+  </div>
+  <span id="clock">--:--:--</span>
+</div>
+
+<!-- ── Main ── -->
+<div id="main">
+
+  <!-- Left column -->
+  <div id="left">
+
+    <!-- Map -->
+    <div id="map-container">
+      <div id="map-label">📡 ADS-B LIVE TRACK</div>
+      <div id="map"></div>
+    </div>
+
+    <!-- Dual oscilloscopes -->
+    <div id="oscilloscopes">
+
+      <!-- Channel 1: ADS-B signal level -->
+      <div class="osc-panel" id="osc1-panel">
+        <div class="osc-title">CH1 · ADS-B AVIATION</div>
+        <div class="osc-dbm" id="osc1-dbm">-- dBm</div>
+        <canvas class="osc" id="osc1"></canvas>
+      </div>
+
+      <!-- Channel 2: RF / Ether noise floor -->
+      <div class="osc-panel" id="osc2-panel">
+        <div class="osc-title">CH2 · RF NOISE FLOOR</div>
+        <div class="osc-dbm" id="osc2-dbm">-- dBm</div>
+        <canvas class="osc" id="osc2"></canvas>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Right sidebar -->
+  <div id="sidebar">
+
+    <!-- Signal classification -->
+    <div id="signal-panel">
+      <div class="panel-title">◈ AI SIGNAL ANALYSIS</div>
+      <div id="signal-type-box">
+        <div id="sig-type">UNKNOWN</div>
+        <div id="confidence-bar-wrap">
+          <div class="conf-label">CONFIDENCE</div>
+          <div class="conf-bar-bg"><div id="conf-bar"></div></div>
+          <div id="conf-pct">0%</div>
+        </div>
+      </div>
+      <div id="threat-box">
+        <span style="color:#555;font-size:11px;">THREAT:</span>
+        <span id="threat-status" style="color:var(--green);">NORMAL</span>
+      </div>
+    </div>
+
+    <!-- Aircraft list -->
+    <div id="aircraft-panel">
+      <div class="panel-title">◈ TRACKED AIRCRAFT</div>
+      <div id="ac-count">0 targets</div>
+      <div id="aircraft-list">
+        <div class="term-empty">Waiting for ADS-B data…</div>
+      </div>
+    </div>
+
+    <!-- Terminal -->
+    <div id="terminal-panel">
+      <div class="term-header">
+        <span>◈ DUMP1090 RAW TERMINAL</span>
+        <span id="term-status">● OFFLINE</span>
+      </div>
+      <div id="terminal">
+        <div class="term-line term-empty">Connecting to dump1090…</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// Clock
+// ─────────────────────────────────────────────
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toISOString().slice(11, 19) + ' UTC';
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ─────────────────────────────────────────────
+// Leaflet map
+// ─────────────────────────────────────────────
+const map = L.map('map', { zoomControl: false }).setView([32.0, 35.0], 7);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap © Carto',
+  maxZoom: 18
+}).addTo(map);
+
+const markers = {};
+
+function updateMap(aircraftList) {
+  const seen = new Set();
+  for (const ac of aircraftList) {
+    if (ac.lat == null || ac.lon == null) continue;
+    seen.add(ac.hex);
+    if (markers[ac.hex]) {
+      markers[ac.hex].setLatLng([ac.lat, ac.lon]);
+    } else {
+      const icon = L.divIcon({
+        className: '',
+        html: `<div style="color:#00ff41;font-size:16px;text-shadow:0 0 6px #00ff41;">✈</div>`,
+        iconAnchor: [8, 8]
+      });
+      const m = L.marker([ac.lat, ac.lon], { icon }).addTo(map);
+      const label = ac.callsign || ac.hex;
+      m.bindTooltip(label, {
+        permanent: true, direction: 'right',
+        className: 'ac-tooltip',
+        offset: [10, 0]
+      });
+      markers[ac.hex] = m;
+    }
+  }
+  // Remove stale markers
+  for (const hex of Object.keys(markers)) {
+    if (!seen.has(hex)) {
+      map.removeLayer(markers[hex]);
+      delete markers[hex];
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Oscilloscope renderer
+// ─────────────────────────────────────────────
+const OSC_MIN = -110;
+const OSC_MAX = -50;
+const OSC_SAMPLES = 80;
+
+function initOsc(canvasId, color) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const buf = new Array(OSC_SAMPLES).fill(OSC_MIN);
+  return { canvas, ctx, buf, color };
+}
+
+function resizeOsc(osc) {
+  const panel = osc.canvas.parentElement;
+  osc.canvas.width  = panel.clientWidth;
+  osc.canvas.height = panel.clientHeight;
+}
+
+function pushSample(osc, val) {
+  osc.buf.push(val);
+  if (osc.buf.length > OSC_SAMPLES) osc.buf.shift();
+}
+
+function drawOsc(osc) {
+  resizeOsc(osc);
+  const { ctx, buf, color } = osc;
+  const W = osc.canvas.width;
+  const H = osc.canvas.height;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Dark background
+  ctx.fillStyle = '#050505';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines (horizontal)
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 1;
+  for (let db = -110; db <= -50; db += 10) {
+    const y = dbToY(db, H);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // Signal trace
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.shadowBlur = 6;
+  ctx.shadowColor = color;
+
+  for (let i = 0; i < buf.length; i++) {
+    const x = (i / (buf.length - 1)) * W;
+    const y = dbToY(buf[i], H);
+    if (i === 0) ctx.moveTo(x, y);
+    else         ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Fill under trace
+  ctx.shadowBlur = 0;
+  const lastY = dbToY(buf[buf.length - 1], H);
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0,   hexAlpha(color, 0.25));
+  grad.addColorStop(1,   hexAlpha(color, 0.01));
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+function dbToY(db, H) {
+  const norm = (db - OSC_MIN) / (OSC_MAX - OSC_MIN);
+  return H - norm * H * 0.85 - H * 0.05;
+}
+
+function hexAlpha(hex, alpha) {
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+const osc1 = initOsc('osc1', '#00cfff');
+const osc2 = initOsc('osc2', '#ff8c00');
+
+// ─────────────────────────────────────────────
+// Aircraft list renderer
+// ─────────────────────────────────────────────
+function renderAircraftList(list) {
+  const el = document.getElementById('aircraft-list');
+  document.getElementById('ac-count').textContent = `${list.length} target${list.length !== 1 ? 's' : ''}`;
+  document.getElementById('badge-ac').textContent = `AC: ${list.length}`;
+
+  if (list.length === 0) {
+    el.innerHTML = '<div class="term-empty">No aircraft detected — waiting…</div>';
+    return;
+  }
+
+  // Sort by last_seen descending
+  list.sort((a, b) => (b.last_seen || '').localeCompare(a.last_seen || ''));
+
+  el.innerHTML = list.slice(0, 50).map(ac => `
+    <div class="ac-row">
+      <span class="hex">${ac.hex || '??????'}</span>
+      <span class="call">${ac.callsign || '--------'}</span>
+      <span class="alt">${ac.altitude != null ? ac.altitude + ' ft' : '---'}</span>
+      <span class="spd">${ac.speed != null ? ac.speed + ' kt' : ''}</span>
+    </div>`).join('');
+}
+
+// ─────────────────────────────────────────────
+// Terminal renderer
+// ─────────────────────────────────────────────
+const MAX_TERM_LINES = 60;
+let termLines = [];
+
+function appendTermMessages(msgs, connected) {
+  const el = document.getElementById('term-status');
+  el.textContent = connected ? '● LIVE' : '● OFFLINE';
+  el.style.color  = connected ? '#00ff41' : '#ff3c3c';
+
+  if (!msgs || msgs.length === 0) return;
+
+  for (const m of msgs) {
+    const isAdsb = m.msg && (m.msg.startsWith('*') || m.msg.startsWith('MSG'));
+    termLines.push({ time: m.time, msg: m.msg, adsb: isAdsb });
+  }
+
+  // Keep only the newest lines
+  if (termLines.length > MAX_TERM_LINES) {
+    termLines = termLines.slice(-MAX_TERM_LINES);
+  }
+
+  const div = document.getElementById('terminal');
+  div.innerHTML = termLines.map(l =>
+    `<div class="term-line ${l.adsb ? 'adsb' : ''}">` +
+    `<span class="ts">${l.time}</span>` +
+    `<span class="msg">${escHtml(l.msg)}</span>` +
+    `</div>`
+  ).join('');
+  div.scrollTop = div.scrollHeight;
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// ─────────────────────────────────────────────
+// Signal panel renderer
+// ─────────────────────────────────────────────
+function renderSignal(type, confidence) {
+  const el = document.getElementById('sig-type');
+  el.textContent = type || 'UNKNOWN';
+  el.style.color = type === 'ADS-B' ? '#00ff41' :
+                   type === 'NOISE' ? '#ff8c00' :
+                   type === 'RF_NOISE' ? '#ffd700' : '#666';
+
+  const pct = Math.min(100, Math.max(0, confidence || 0));
+  document.getElementById('conf-bar').style.width = pct + '%';
+  document.getElementById('conf-pct').textContent = pct + '%';
+  document.getElementById('badge-sig').textContent = `SIG: ${type || '--'}`;
+}
+
+function renderThreat(threat) {
+  const el = document.getElementById('threat-status');
+  el.textContent = threat || 'NORMAL';
+  el.style.color = threat === 'THREAT' ? '#ff3c3c' :
+                   threat === 'WARNING' ? '#ffd700' : '#00ff41';
+}
+
+// ─────────────────────────────────────────────
+// Polling
+// ─────────────────────────────────────────────
+async function poll() {
+  try {
+    // Parallel fetch of all endpoints
+    const [noiseRes, aircraftRes, rawRes, threatRes] = await Promise.all([
+      fetch('/noise').then(r => r.json()).catch(() => null),
+      fetch('/aircraft').then(r => r.json()).catch(() => null),
+      fetch('/raw').then(r => r.json()).catch(() => null),
+      fetch('/threat/current').then(r => r.json()).catch(() => null),
+    ]);
+
+    // ── Noise & oscilloscopes ──
+    if (noiseRes) {
+      renderSignal(noiseRes.current_signal_type, noiseRes.signal_confidence);
+
+      const adsbHist  = noiseRes.adsb_history  || [];
+      const noiseHist = noiseRes.noise_history  || [];
+
+      if (adsbHist.length > 0) {
+        for (const p of adsbHist.slice(-5)) pushSample(osc1, p.v ?? p.level ?? OSC_MIN);
+      } else {
+        pushSample(osc1, noiseRes.adsb_dbm ?? OSC_MIN);
+      }
+      document.getElementById('osc1-dbm').textContent =
+        (noiseRes.adsb_dbm != null ? noiseRes.adsb_dbm.toFixed(1) : '--') + ' dBm';
+
+      if (noiseHist.length > 0) {
+        for (const p of noiseHist.slice(-5)) pushSample(osc2, p.v ?? p.level ?? OSC_MIN);
+      } else {
+        pushSample(osc2, noiseRes.noise_dbm ?? OSC_MIN);
+      }
+      document.getElementById('osc2-dbm').textContent =
+        (noiseRes.noise_dbm != null ? noiseRes.noise_dbm.toFixed(1) : '--') + ' dBm';
+
+      drawOsc(osc1);
+      drawOsc(osc2);
+    }
+
+    // ── Aircraft ──
+    if (aircraftRes) {
+      const list = aircraftRes.aircraft || [];
+      renderAircraftList(list);
+      updateMap(list);
+
+      const sdrBadge = document.getElementById('badge-sdr');
+      if (list.length > 0) {
+        sdrBadge.textContent = 'SDR: ONLINE';
+        sdrBadge.className = 'badge ok';
+      }
+    }
+
+    // ── Raw terminal ──
+    if (rawRes) {
+      const connected = rawRes.connected === true;
+      const msgs = rawRes.messages || [];
+
+      const sdrBadge = document.getElementById('badge-sdr');
+      if (connected) {
+        sdrBadge.textContent = 'SDR: ONLINE';
+        sdrBadge.className = 'badge ok';
+      }
+
+      appendTermMessages(msgs, connected);
+    }
+
+    // ── Threat ──
+    if (threatRes) {
+      renderThreat(threatRes.threat);
+    }
+
+  } catch (e) {
+    console.warn('Poll error:', e);
+  }
+}
+
+// Initial render
+drawOsc(osc1);
+drawOsc(osc2);
+renderAircraftList([]);
+
+// Poll every second
+poll();
+setInterval(poll, 1000);
+
+// Redraw oscilloscopes on resize
+window.addEventListener('resize', () => { drawOsc(osc1); drawOsc(osc2); });
+</script>
+
+<!-- Leaflet tooltip custom style -->
+<style>
+  .ac-tooltip {
+    background: rgba(0,0,0,0.8) !important;
+    border: 1px solid #00ff41 !important;
+    color: #00ff41 !important;
+    font-family: 'Courier New', monospace !important;
+    font-size: 10px !important;
+    padding: 2px 6px !important;
+    border-radius: 2px !important;
+    white-space: nowrap !important;
+  }
+  .ac-tooltip::before { display: none !important; }
+</style>
+</body>
+</html>
