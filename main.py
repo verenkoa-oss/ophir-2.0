@@ -1184,7 +1184,7 @@ async def dump1090_start():
         return {"success": False, "message": "dump1090 binary not found in PATH"}
     except Exception as e:
         logger.error(f"dump1090 start error: {e}")
-        return {"success": False, "message": str(e)}
+        return {"success": False, "message": "Failed to start dump1090 – see server log"}
 
 
 @app.post("/api/v1/dump1090/stop")
@@ -1202,7 +1202,7 @@ async def dump1090_stop():
         return {"success": True, "stopped_pid": pid}
     except Exception as e:
         logger.error(f"dump1090 stop error: {e}")
-        return {"success": False, "message": str(e)}
+        return {"success": False, "message": "Failed to stop dump1090 – see server log"}
 
 
 @app.post("/api/v1/dump1090/restart")
