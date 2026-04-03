@@ -6,6 +6,10 @@ Runs a background _continuous_read() task to fill aircraft_dict and noise data.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+
 import math
 import random
 import time
