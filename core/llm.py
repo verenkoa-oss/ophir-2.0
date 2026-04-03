@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 import httpx
 import config
 
@@ -78,7 +79,7 @@ class LLMAnalyzer:
         Returns a placeholder immediately when LLM is disabled.
         """
         if not self.enabled:
-            logger.debug(f"LLM disabled – skipping analysis for {hex_code}")
+            logger.debug(f"LLM disabled - skipping analysis for {hex_code}")
             return "LLM analysis is currently disabled."
 
         if not self.client:
@@ -143,7 +144,6 @@ Provide brief security assessment (2-3 sentences).
 
 
 def _utcnow_iso() -> str:
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
 
 async def test_llm():

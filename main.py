@@ -57,13 +57,19 @@ _antenna_mode: config.AntennaMode = config.DEFAULT_ANTENNA_MODE
 # LLM enabled flag
 _llm_enabled: bool = config.LLM_ENABLED_DEFAULT
 
-# dump1090 uptime tracking
-_dump1090_start_time: float | None = None
+# dump1090 uptime tracking (monotonic clock reference, set only when confirmed running)
+_dump1090_start_monotonic: float | None = None
+
+# Delay between stop and start during restart
+_DUMP1090_RESTART_DELAY: float = 1.0
+
+# Timeout for quick Ollama connectivity check in the status endpoint
+_OLLAMA_STATUS_CHECK_TIMEOUT: float = 3.0
 
 @app.on_event("startup")
 async def startup():
     global sdr_manager, classifier, detector, llm_analyzer, _tracking_task, _broadcast_task
-    global _antenna_mode, _llm_enabled, _dump1090_start_time
+    global _antenna_mode, _llm_enabled, _dump1090_start_monotonic
     logger.info("="*80)
     logger.info("🚀 OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR | STARTING...")
     try:
@@ -71,7 +77,9 @@ async def startup():
         # Apply the default antenna mode from config
         sdr_manager.set_antenna_mode(_antenna_mode)
         _tracking_task = asyncio.create_task(sdr_manager.start_tracking())
-        _dump1090_start_time = time.monotonic()
+        # Only record uptime reference if dump1090 is actually reachable
+        if _get_dump1090_pid():
+            _dump1090_start_monotonic = time.monotonic()
         logger.info("✅ Connected to dump1090 - REAL DATA MODE (PORT 30001)")
         classifier = get_classifier()
         logger.info("✅ AI Signal Classifier LOADED")
@@ -408,9 +416,9 @@ def _get_dump1090_pid() -> int | None:
 
 def _dump1090_uptime() -> float | None:
     """Return seconds since dump1090 start was last recorded, or None."""
-    if _dump1090_start_time is None:
+    if _dump1090_start_monotonic is None:
         return None
-    return round(time.monotonic() - _dump1090_start_time, 1)
+    return round(time.monotonic() - _dump1090_start_monotonic, 1)
 
 
 @app.get("/api/v1/dump1090/status")
@@ -419,10 +427,7 @@ async def dump1090_status():
     pid = _get_dump1090_pid()
     running = pid is not None
     aircraft_count = len(sdr_manager.aircraft_dict) if sdr_manager else 0
-
-    last_msg: str | None = None
-    if sdr_manager and sdr_manager._signal_events:
-        last_msg = sdr_manager._signal_events[-1].get("timestamp")
+    last_msg = sdr_manager.get_last_signal_timestamp() if sdr_manager else None
 
     return {
         "dump1090_status": "running" if running else "stopped",
@@ -438,7 +443,7 @@ async def dump1090_status():
 @app.post("/api/v1/dump1090/start")
 async def dump1090_start():
     """Start dump1090 service (uses systemctl if available, otherwise direct)."""
-    global _dump1090_start_time
+    global _dump1090_start_monotonic
 
     pid = _get_dump1090_pid()
     if pid:
@@ -459,7 +464,7 @@ async def dump1090_start():
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if proc.returncode == 0:
-                _dump1090_start_time = time.monotonic()
+                _dump1090_start_monotonic = time.monotonic()
                 logger.info(f"✅ dump1090 started via: {' '.join(cmd)}")
                 return {
                     "dump1090_status": "running",
@@ -477,14 +482,14 @@ async def dump1090_start():
     return {
         "dump1090_status": "stopped",
         "action": "start_failed",
-        "error": error_msg or "Could not start dump1090. Is it installed?",
+        "error": "Could not start dump1090. Is it installed?",
     }
 
 
 @app.post("/api/v1/dump1090/stop")
 async def dump1090_stop():
     """Stop dump1090 service."""
-    global _dump1090_start_time
+    global _dump1090_start_monotonic
 
     pid = _get_dump1090_pid()
     if not pid:
@@ -503,7 +508,7 @@ async def dump1090_stop():
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if proc.returncode == 0:
-                _dump1090_start_time = None
+                _dump1090_start_monotonic = None
                 logger.info(f"🛑 dump1090 stopped via: {' '.join(cmd)}")
                 # Disconnect SDR reader so it stops buffering stale data
                 if sdr_manager:
@@ -524,7 +529,7 @@ async def dump1090_stop():
     if pid:
         try:
             subprocess.run(["kill", str(pid)], check=True, timeout=5)
-            _dump1090_start_time = None
+            _dump1090_start_monotonic = None
             if sdr_manager:
                 sdr_manager.connected = False
             logger.info(f"🛑 dump1090 (PID {pid}) terminated via SIGTERM")
@@ -541,7 +546,7 @@ async def dump1090_stop():
     return {
         "dump1090_status": "running",
         "action": "stop_failed",
-        "error": error_msg or "Could not stop dump1090.",
+        "error": "Could not stop dump1090.",
     }
 
 
@@ -549,7 +554,7 @@ async def dump1090_stop():
 async def dump1090_restart():
     """Restart dump1090 service."""
     stop_result = await dump1090_stop()
-    await asyncio.sleep(1)
+    await asyncio.sleep(_DUMP1090_RESTART_DELAY)
     start_result = await dump1090_start()
     return {
         "dump1090_status": start_result.get("dump1090_status"),
@@ -603,7 +608,9 @@ async def llm_status():
 
     # Refresh connection state without blocking long
     try:
-        ollama_ok = await asyncio.wait_for(llm_analyzer.check_connection(), timeout=3.0)
+        ollama_ok = await asyncio.wait_for(
+            llm_analyzer.check_connection(), timeout=_OLLAMA_STATUS_CHECK_TIMEOUT
+        )
     except asyncio.TimeoutError:
         ollama_ok = False
 

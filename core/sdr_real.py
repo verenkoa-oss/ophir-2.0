@@ -17,6 +17,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
+# dBm above rssi_threshold that counts as "strong" signal
+_STRONG_SIGNAL_OFFSET_DB = 30
+
 
 class SDRReader(_BaseSDRReader):
     """SDRReader with per-aircraft state tracking and helper data methods."""
@@ -146,7 +149,7 @@ class SDRReader(_BaseSDRReader):
 
         # Use antenna-profile threshold to classify signal strength
         threshold = self.rssi_threshold  # e.g. -75 GARAGE, -90 AIR
-        strong_thresh = threshold + 30   # 30 dBm above threshold = strong
+        strong_thresh = threshold + _STRONG_SIGNAL_OFFSET_DB
 
         if avg_rssi >= strong_thresh:
             signal_type = "STRONG"
@@ -169,3 +172,9 @@ class SDRReader(_BaseSDRReader):
     async def get_signal_events(self) -> list:
         """Return recent signal events."""
         return list(self._signal_events)
+
+    def get_last_signal_timestamp(self) -> str | None:
+        """Return the timestamp of the most recent signal event, or None."""
+        if self._signal_events:
+            return self._signal_events[-1].get("timestamp")
+        return None
