@@ -215,7 +215,9 @@ Once the branch is pushed without conflicts:
    In this case the message appeared inside a Copilot Chat session, which counted against the
    monthly Copilot quota — not against any git or repository permission.  
    Git push is **free** and works regardless of Copilot limits.  
-   Merging a PR via the web UI (section 6) is also **always free**.
+   Merging a PR via the web UI (section 6) is also **always free**.  
+   → For a full explanation of all GitHub limits (Copilot, security scans, storage, push protection),
+   see [GITHUB_LIMITS.md](./GITHUB_LIMITS.md).
 
 ### "protected branch" / cannot force-push
 → The `main` branch has no protections in this repository. Regular push is fine.
