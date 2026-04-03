@@ -230,19 +230,31 @@ async def get_anomalies():
         logger.error(f"Anomalies error: {e}")
         return {"status": "ERROR"}
 
+def _resolve_html_path(candidates: list[str]) -> str | None:
+    """Return the first existing path from *candidates*, or None."""
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+_DASHBOARD_PATH: str | None = _resolve_html_path(
+    ["web/index.html", "dashboard.html", "web/dashboard.html", "index.html"]
+)
+_ARCHIVE_PATH: str | None = _resolve_html_path(["web/archive.html", "archive.html"])
+
+
 @app.get("/dashboard.html")
 async def get_dashboard():
-    for path in ["web/index.html", "dashboard.html", "web/dashboard.html", "index.html"]:
-        if os.path.exists(path):
-            return FileResponse(path, media_type="text/html")
+    if _DASHBOARD_PATH:
+        return FileResponse(_DASHBOARD_PATH, media_type="text/html")
     raise HTTPException(status_code=404, detail="Dashboard not found")
 
 
 @app.get("/archive.html")
 async def get_archive():
-    for path in ["web/archive.html", "archive.html"]:
-        if os.path.exists(path):
-            return FileResponse(path, media_type="text/html")
+    if _ARCHIVE_PATH:
+        return FileResponse(_ARCHIVE_PATH, media_type="text/html")
     raise HTTPException(status_code=404, detail="Archive not found")
 
 
