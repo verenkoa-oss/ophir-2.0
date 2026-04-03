@@ -1,117 +1,123 @@
 """
-OPHIR Signal Classifier
-Rule-based signal classification for ADS-B aircraft messages.
-Classifies signals as military, civilian, or anomaly.
+OPHIR Signal Classifier Module
+Classifies ADS-B signals and aircraft behaviour patterns.
+The current implementation is a rule-based stub; replace or extend the
+SignalClassifier.classify() method with an ML model as the project matures.
 """
 
 import logging
-import re
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# ICAO hex prefix ranges used by military/government operators
-# (approximate; based on ICAO country allocation blocks)
-_MILITARY_HEX_PREFIXES = (
-    "AE",   # US military (USAF, USN, etc.)
-    "43C",  # French military
-    "3B",   # German military
-    "7F",   # Unallocated / test
-)
-
-# Callsign patterns that suggest military or government use
-_MILITARY_CALLSIGN_PATTERNS = re.compile(
-    r"^(DUKE|REACH|LAGR|JAKE|IRON|COBRA|EAGLE|VIPER|RAZOR|GHOST|RCH|SAM|SUI|"
-    r"MAGMA|ARMY|NAVY|USAF|NATO|RRR|RFF|CTM|CTF|AME)\d*",
-    re.IGNORECASE,
-)
-
-# Anomaly thresholds
-_ANOMALY_ALTITUDE_FT = 60_000   # above 60,000 ft is unusual for civil traffic
-_ANOMALY_SPEED_KT = 700         # above 700 kt ground speed is unusual
-
 
 class SignalClassifier:
-    """Classify a decoded ADS-B message into a category."""
+    """
+    Rule-based signal / aircraft classifier.
 
-    CATEGORY_MILITARY = "MILITARY"
-    CATEGORY_CIVILIAN = "CIVILIAN"
-    CATEGORY_ANOMALY = "ANOMALY"
-    CATEGORY_UNKNOWN = "UNKNOWN"
+    classify(aircraft_data) returns a dict with:
+        - category   : str  (e.g. 'MILITARY', 'COMMERCIAL', 'GENERAL_AVIATION', 'UNKNOWN')
+        - confidence : float  0.0 – 1.0
+        - flags      : list[str]  (any special observations)
+    """
 
-    def classify(self, signal_data: dict) -> dict:
+    # Known military hex-code prefixes (ICAO blocks allocated to military)
+    _MILITARY_PREFIXES = (
+        "AE",   # US military (DoD)
+        "A9",   # various US government
+    )
+
+    # Callsign patterns typical of military / special operations
+    _MILITARY_CALLSIGNS = (
+        "RCH",   # USAF Air Mobility Command
+        "MOOSE",
+        "REACH",
+        "FORTE",
+        "JAKE",
+        "ROCKY",
+        "DUKE",
+        "IRON",
+        "STEEL",
+    )
+
+    def classify(self, aircraft_data: dict) -> dict:
         """
-        Classify a single aircraft message.
+        Classify a single aircraft based on available ADS-B data.
 
         Parameters
         ----------
-        signal_data : dict
-            Decoded ADS-B/SBS record with keys such as hex_code, callsign,
-            altitude, ground_speed, rssi, etc.
+        aircraft_data : dict
+            Keys may include: hex_code, callsign, altitude, ground_speed,
+            track, latitude, longitude, rssi, is_shadow, …
 
         Returns
         -------
-        dict
-            {
-                "category": str,          # MILITARY / CIVILIAN / ANOMALY / UNKNOWN
-                "confidence": float,      # 0.0–1.0
-                "reason": str,            # human-readable explanation
-            }
+        dict with keys: category, confidence, flags
         """
-        if not signal_data:
-            return {"category": self.CATEGORY_UNKNOWN, "confidence": 0.0, "reason": "No data"}
+        hex_code = (aircraft_data.get("hex_code") or "").upper()
+        callsign = (aircraft_data.get("callsign") or "").upper().strip()
+        altitude = aircraft_data.get("altitude")
+        ground_speed = aircraft_data.get("ground_speed")
+        is_shadow = aircraft_data.get("is_shadow", False)
 
-        hex_code = (signal_data.get("hex_code") or "").upper()
-        callsign = (signal_data.get("callsign") or "").strip().upper()
-        altitude = signal_data.get("altitude")
-        speed = signal_data.get("ground_speed")
+        flags: list = []
+        category = "UNKNOWN"
+        confidence = 0.5
 
-        # ---- Anomaly checks (highest priority) ----
-        if altitude is not None and altitude > _ANOMALY_ALTITUDE_FT:
-            return {
-                "category": self.CATEGORY_ANOMALY,
-                "confidence": 0.95,
-                "reason": f"Extreme altitude {altitude:.0f} ft",
-            }
-        if speed is not None and speed > _ANOMALY_SPEED_KT:
-            return {
-                "category": self.CATEGORY_ANOMALY,
-                "confidence": 0.90,
-                "reason": f"Extreme speed {speed:.0f} kt",
-            }
+        # ---- Shadow / no-position detection ----
+        if is_shadow or (aircraft_data.get("latitude") is None and aircraft_data.get("longitude") is None):
+            flags.append("NO_POSITION")
 
-        # ---- Military checks ----
-        if callsign and _MILITARY_CALLSIGN_PATTERNS.match(callsign):
-            return {
-                "category": self.CATEGORY_MILITARY,
-                "confidence": 0.85,
-                "reason": f"Military callsign pattern: {callsign}",
-            }
-        if hex_code and any(hex_code.startswith(pfx) for pfx in _MILITARY_HEX_PREFIXES):
-            return {
-                "category": self.CATEGORY_MILITARY,
-                "confidence": 0.75,
-                "reason": f"Military ICAO block: {hex_code[:3]}",
-            }
+        # ---- Hex-prefix based military detection ----
+        if any(hex_code.startswith(pfx) for pfx in self._MILITARY_PREFIXES):
+            category = "MILITARY"
+            confidence = 0.85
+            flags.append("MILITARY_HEX_PREFIX")
 
-        # ---- Civilian / unknown ----
-        if hex_code:
-            return {
-                "category": self.CATEGORY_CIVILIAN,
-                "confidence": 0.70,
-                "reason": "Civilian ICAO allocation",
-            }
+        # ---- Callsign-based military detection ----
+        if callsign and any(callsign.startswith(cs) for cs in self._MILITARY_CALLSIGNS):
+            category = "MILITARY"
+            confidence = max(confidence, 0.90)
+            flags.append("MILITARY_CALLSIGN")
 
-        return {"category": self.CATEGORY_UNKNOWN, "confidence": 0.0, "reason": "Insufficient data"}
+        # ---- Basic civilian airline detection ----
+        if category == "UNKNOWN" and callsign and len(callsign) >= 3:
+            # IATA/ICAO airline codes are typically 2–3 uppercase letters followed by digits
+            prefix = "".join(c for c in callsign if c.isalpha())
+            if 2 <= len(prefix) <= 3:
+                category = "COMMERCIAL"
+                confidence = 0.70
 
+        # ---- Altitude / speed anomaly flags ----
+        if altitude is not None:
+            if altitude < 0:
+                flags.append("NEGATIVE_ALTITUDE")
+            elif altitude > 60000:
+                flags.append("EXTREME_ALTITUDE")
 
-# Module-level singleton
-_classifier_instance: SignalClassifier | None = None
+        if ground_speed is not None:
+            if ground_speed > 600:
+                flags.append("HIGH_SPEED")
+            elif ground_speed < 0:
+                flags.append("INVALID_SPEED")
+
+        logger.debug(
+            f"Classified {hex_code} ({callsign}) → {category} "
+            f"(confidence={confidence:.2f}, flags={flags})"
+        )
+
+        return {
+            "category": category,
+            "confidence": round(confidence, 2),
+            "flags": flags,
+            "classified_at": datetime.utcnow().isoformat(),
+        }
 
 
 def get_classifier() -> SignalClassifier:
-    """Return the shared SignalClassifier instance (creates on first call)."""
-    global _classifier_instance
-    if _classifier_instance is None:
-        _classifier_instance = SignalClassifier()
-        logger.info("✅ SignalClassifier initialized")
-    return _classifier_instance
+    """
+    Factory function — returns a ready-to-use SignalClassifier instance.
+    Swap this out for a ML-model-backed classifier in future iterations.
+    """
+    logger.info("SignalClassifier initialised (rule-based stub)")
+    return SignalClassifier()
