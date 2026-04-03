@@ -1,94 +1,887 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>OPHIR 2.0 Archive</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OPHIR 2.0 | AEGIS-X Airspace Monitor</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        * { margin: 0; padding: 0; }
-        body { background: #000; color: #0f0; font-family: monospace; overflow: hidden; }
-        #container { display: flex; height: 100vh; }
-        #map { flex: 1; background: #1a1a1a; }
-        #sidebar { width: 450px; background: rgba(0,0,0,0.95); border-left: 2px solid #0f0; padding: 15px; overflow-y: auto; }
-        h1 { color: #0f0; border-bottom: 2px solid #0f0; padding: 10px 0; margin-bottom: 15px; }
-        .stat { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #333; }
-        .label { color: #0f0; }
-        .value { color: #ffff00; font-weight: bold; }
-        button { background: #0f0; color: #000; border: none; padding: 8px 12px; margin: 5px 5px 5px 0; cursor: pointer; font-weight: bold; }
-        button:hover { background: #00cc00; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
-        th { background: #1a1a1a; color: #0f0; padding: 8px; border: 1px solid #333; }
-        td { padding: 8px; border: 1px solid #333; }
-        tr:hover { background: #1a1a1a; }
-        .shadow { background: #4a0000; color: #ff6666; }
-        .mil { color: #ff8844; }
+        :root {
+            --bg:        #0d111e;
+            --bg2:       #141929;
+            --border:    #00ff4133;
+            --green:     #00ff41;
+            --blue:      #00d4ff;
+            --orange:    #ff6b35;
+            --red:       #ff2a2a;
+            --text:      #c8d8e8;
+            --dim:       #6a7a8a;
+            --glow:      0 0 8px #00ff4166;
+            --glow-b:    0 0 8px #00d4ff66;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: var(--bg); color: var(--text); font-family: 'Courier New', monospace; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+
+        /* ── TOP BAR ── */
+        #topbar { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 8px 16px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+        #topbar h1 { color: var(--green); font-size: 1rem; letter-spacing: 2px; text-shadow: var(--glow); white-space: nowrap; }
+        .tb-stat { font-size: 0.78rem; color: var(--dim); }
+        .tb-stat span { color: var(--blue); font-weight: bold; }
+        #topbar .spacer { flex: 1; }
+
+        /* ── MAIN LAYOUT ── */
+        #main { display: flex; flex: 1; overflow: hidden; }
+        #map { flex: 1; min-width: 0; }
+        #sidebar { width: 420px; flex-shrink: 0; background: var(--bg2); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+
+        /* ── SIDEBAR TABS ── */
+        #tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+        .tab { flex: 1; padding: 8px 4px; font-size: 0.72rem; text-align: center; cursor: pointer; color: var(--dim); border: none; background: none; letter-spacing: 1px; transition: color 0.2s; }
+        .tab.active { color: var(--green); border-bottom: 2px solid var(--green); text-shadow: var(--glow); }
+        .tab:hover:not(.active) { color: var(--blue); }
+
+        /* ── TAB PANELS ── */
+        .panel { display: none; flex: 1; overflow-y: auto; padding: 10px; }
+        .panel.active { display: flex; flex-direction: column; gap: 8px; }
+
+        /* ── AIRCRAFT TABLE ── */
+        #ac-table { width: 100%; border-collapse: collapse; font-size: 0.73rem; }
+        #ac-table th { background: #0a0e1a; color: var(--green); padding: 6px 4px; text-align: left; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1; font-size: 0.68rem; letter-spacing: 1px; }
+        #ac-table td { padding: 5px 4px; border-bottom: 1px solid #1a2030; white-space: nowrap; cursor: pointer; }
+        #ac-table tr:hover td { background: #1a2540; color: var(--blue); }
+        .hex-col { color: var(--blue); font-weight: bold; }
+        .call-col { color: var(--green); }
+        .rssi-col { color: var(--orange); }
+        .shadow-row td { color: #ff4444 !important; opacity: 0.8; }
+        .mil-row td { color: #ffaa44 !important; }
+
+        /* ── FILTER BUTTONS ── */
+        .filter-bar { display: flex; gap: 6px; flex-wrap: wrap; }
+        .fbtn { background: #1a2030; border: 1px solid var(--border); color: var(--dim); padding: 4px 10px; font-size: 0.72rem; cursor: pointer; font-family: inherit; letter-spacing: 1px; transition: all 0.2s; }
+        .fbtn.active, .fbtn:hover { background: var(--green); color: #000; border-color: var(--green); }
+
+        /* ── RECORDS TABLE ── */
+        .records-section h3 { color: var(--green); font-size: 0.8rem; margin-bottom: 6px; letter-spacing: 1px; text-shadow: var(--glow); }
+        .rec-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
+        .rec-table th { color: var(--blue); padding: 4px; border-bottom: 1px solid var(--border); font-size: 0.68rem; }
+        .rec-table td { padding: 4px; border-bottom: 1px solid #1a2030; }
+        .rec-gold { color: #ffd700; font-weight: bold; }
+
+        /* ── STATS PANEL ── */
+        .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a2030; font-size: 0.78rem; }
+        .stat-label { color: var(--dim); }
+        .stat-val { color: var(--blue); font-weight: bold; }
+
+        /* ── MODAL OVERLAY ── */
+        #modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.82); z-index: 1000; display: none; align-items: center; justify-content: center; }
+        #modal-overlay.open { display: flex; }
+
+        /* ── MODAL BOX ── */
+        #modal { background: #111827; border: 1px solid var(--green); box-shadow: 0 0 30px #00ff4133, 0 0 60px #00ff410d; width: 600px; max-width: 95vw; max-height: 88vh; overflow-y: auto; display: flex; flex-direction: column; animation: slideIn 0.25s ease; }
+        @keyframes slideIn { from { transform: scale(0.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+        /* ── MODAL HEADER ── */
+        .modal-hdr { background: #0a0e1a; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--green); flex-shrink: 0; }
+        .modal-hdr-title { color: var(--green); font-size: 0.95rem; letter-spacing: 2px; text-shadow: var(--glow); }
+        .modal-hdr-sub { color: var(--dim); font-size: 0.72rem; margin-top: 2px; }
+        #modal-close { background: none; border: 1px solid var(--dim); color: var(--dim); padding: 4px 10px; cursor: pointer; font-family: inherit; font-size: 0.8rem; transition: all 0.2s; }
+        #modal-close:hover { border-color: var(--red); color: var(--red); }
+
+        /* ── MODAL SECTIONS ── */
+        .modal-body { padding: 0; flex: 1; }
+        .msec { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+        .msec-title { color: var(--green); font-size: 0.75rem; letter-spacing: 2px; margin-bottom: 8px; text-shadow: var(--glow); }
+        .mrow { display: flex; justify-content: space-between; padding: 3px 0; font-size: 0.78rem; gap: 8px; }
+        .mlab { color: var(--dim); white-space: nowrap; min-width: 140px; }
+        .mval { color: var(--blue); text-align: right; word-break: break-all; }
+        .mval.green { color: var(--green); }
+        .mval.orange { color: var(--orange); }
+        .mval.red { color: var(--red); }
+        .mval.yellow { color: #ffd700; }
+
+        /* ── THREAT BADGE ── */
+        .badge { display: inline-block; padding: 2px 8px; font-size: 0.68rem; letter-spacing: 1px; border-radius: 2px; font-weight: bold; }
+        .threat-NONE    { background: #002200; color: var(--green); border: 1px solid var(--green); }
+        .threat-LOW     { background: #2a1a00; color: #ffaa00; border: 1px solid #ffaa00; }
+        .threat-UNKNOWN { background: #2a1500; color: var(--orange); border: 1px solid var(--orange); }
+        .threat-HIGH    { background: #2a0000; color: var(--red); border: 1px solid var(--red); }
+
+        /* ── LLM BLOCK ── */
+        #llm-box { background: #0a1020; border: 1px solid #1a3040; padding: 10px; font-size: 0.76rem; color: var(--text); white-space: pre-wrap; max-height: 140px; overflow-y: auto; margin-top: 6px; line-height: 1.5; }
+
+        /* ── SIGNAL BAR ── */
+        .sig-bar-wrap { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+        .sig-bar { flex: 1; height: 6px; background: #1a2030; border-radius: 3px; overflow: hidden; }
+        .sig-bar-fill { height: 100%; background: linear-gradient(to right, var(--green), var(--blue)); transition: width 0.5s; }
+
+        /* ── MODAL ACTIONS ── */
+        .modal-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px; background: #0a0e1a; border-top: 1px solid var(--border); }
+        .mact-btn { background: #1a2030; border: 1px solid var(--border); color: var(--text); padding: 6px 12px; font-size: 0.73rem; cursor: pointer; font-family: inherit; letter-spacing: 1px; transition: all 0.2s; }
+        .mact-btn:hover { background: var(--green); color: #000; border-color: var(--green); }
+        .mact-btn.danger:hover { background: var(--red); border-color: var(--red); }
+
+        /* ── ADD-UNKNOWN FORM ── */
+        .form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+        .form-label { color: var(--dim); font-size: 0.72rem; letter-spacing: 1px; }
+        .form-input, .form-select, .form-textarea { background: #0a0e1a; border: 1px solid var(--border); color: var(--text); padding: 6px 8px; font-family: inherit; font-size: 0.78rem; width: 100%; outline: none; }
+        .form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--green); box-shadow: var(--glow); }
+        .form-textarea { height: 60px; resize: vertical; }
+        .form-select option { background: #0a0e1a; }
+        .submit-btn { background: var(--green); color: #000; border: none; padding: 8px 20px; font-family: inherit; font-weight: bold; font-size: 0.8rem; cursor: pointer; letter-spacing: 1px; transition: opacity 0.2s; }
+        .submit-btn:hover { opacity: 0.85; }
+        .cancel-btn { background: #1a2030; color: var(--dim); border: 1px solid var(--border); padding: 8px 14px; font-family: inherit; font-size: 0.8rem; cursor: pointer; }
+
+        /* ── LIVE DOT ── */
+        .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: var(--glow); animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+        /* ── SCROLLBAR ── */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: #0a0e1a; }
+        ::-webkit-scrollbar-thumb { background: #2a3a4a; border-radius: 3px; }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width: 768px) {
+            #sidebar { width: 100%; position: absolute; bottom: 0; left: 0; height: 50vh; border-left: none; border-top: 1px solid var(--border); }
+            #main { flex-direction: column; }
+        }
     </style>
 </head>
 <body>
-    <div id="container">
-        <div id="map"></div>
-        <div id="sidebar">
-            <h1>[ OPHIR 2.0 ARCHIVE ]</h1>
-            <div class="stat">
-                <span class="label">Total Aircraft:</span>
-                <span class="value" id="total">0</span>
+
+<!-- TOP BAR -->
+<div id="topbar">
+    <h1>✈ OPHIR 2.0 | AEGIS-X</h1>
+    <div class="tb-stat">AIRCRAFT: <span id="tb-count">0</span></div>
+    <div class="tb-stat">SHADOWS: <span id="tb-shadows">0</span></div>
+    <div class="tb-stat">RSSI AVG: <span id="tb-rssi">—</span></div>
+    <div class="spacer"></div>
+    <span class="live-dot" title="Live"></span>
+</div>
+
+<!-- MAIN AREA -->
+<div id="main">
+    <div id="map"></div>
+
+    <div id="sidebar">
+        <!-- TABS -->
+        <div id="tabs">
+            <button class="tab active" onclick="showTab('aircraft',event)">✈ AIRCRAFT</button>
+            <button class="tab" onclick="showTab('records',event)">🏆 RECORDS</button>
+            <button class="tab" onclick="showTab('stats',event)">📊 STATS</button>
+        </div>
+
+        <!-- AIRCRAFT PANEL -->
+        <div id="panel-aircraft" class="panel active">
+            <div class="filter-bar">
+                <button class="fbtn active" onclick="applyFilter('all',this)">ALL</button>
+                <button class="fbtn" onclick="applyFilter('gps',this)">GPS ✓</button>
+                <button class="fbtn" onclick="applyFilter('shadow',this)">SHADOW</button>
+                <button class="fbtn" onclick="applyFilter('mil',this)">MIL</button>
             </div>
-            <div class="stat">
-                <span class="label">Military:</span>
-                <span class="value" id="mil">0</span>
-            </div>
-            <div class="stat">
-                <span class="label">Shadows (No GPS):</span>
-                <span class="value" id="shadow">0</span>
-            </div>
-            <button onclick="filter('all')">All</button>
-            <button onclick="filter('mil')">Military</button>
-            <button onclick="filter('shadow')">Shadows</button>
-            <table>
-                <thead><tr><th>HEX</th><th>Callsign</th><th>Type</th><th>GPS</th></tr></thead>
-                <tbody id="tbody"></tbody>
+            <table id="ac-table">
+                <thead>
+                    <tr>
+                        <th>HEX</th>
+                        <th>CALLSIGN</th>
+                        <th>ALT ft</th>
+                        <th>SPD kt</th>
+                        <th>RSSI</th>
+                        <th>GPS</th>
+                    </tr>
+                </thead>
+                <tbody id="ac-tbody"></tbody>
             </table>
         </div>
+
+        <!-- RECORDS PANEL -->
+        <div id="panel-records" class="panel">
+            <div class="records-section">
+                <h3>🏆 MAX ALTITUDE</h3>
+                <table class="rec-table" id="rec-alt">
+                    <thead><tr><th>HEX</th><th>Callsign</th><th class="rec-gold">Alt (ft)</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="records-section">
+                <h3>⚡ MAX SPEED</h3>
+                <table class="rec-table" id="rec-spd">
+                    <thead><tr><th>HEX</th><th>Callsign</th><th class="rec-gold">Spd (kt)</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="records-section">
+                <h3>📡 BEST SIGNAL</h3>
+                <table class="rec-table" id="rec-rssi">
+                    <thead><tr><th>HEX</th><th>Callsign</th><th class="rec-gold">RSSI (dBm)</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <div class="records-section">
+                <h3>🆕 UNIQUE (today)</h3>
+                <table class="rec-table" id="rec-uniq">
+                    <thead><tr><th>HEX</th><th>Callsign</th><th>First Seen</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- STATS PANEL -->
+        <div id="panel-stats" class="panel">
+            <div class="stat-row"><span class="stat-label">Total tracked (session)</span><span class="stat-val" id="st-total">0</span></div>
+            <div class="stat-row"><span class="stat-label">Currently visible</span><span class="stat-val" id="st-visible">0</span></div>
+            <div class="stat-row"><span class="stat-label">GPS transmitting</span><span class="stat-val" id="st-gps">0</span></div>
+            <div class="stat-row"><span class="stat-label">Shadows (no GPS)</span><span class="stat-val" id="st-shadow">0</span></div>
+            <div class="stat-row"><span class="stat-label">Avg RSSI (dBm)</span><span class="stat-val" id="st-rssi">—</span></div>
+            <div class="stat-row"><span class="stat-label">Avg Altitude (ft)</span><span class="stat-val" id="st-alt">—</span></div>
+            <div class="stat-row"><span class="stat-label">Avg Speed (kt)</span><span class="stat-val" id="st-spd">—</span></div>
+            <div class="stat-row"><span class="stat-label">LLM Status</span><span class="stat-val" id="st-llm">—</span></div>
+            <div class="stat-row"><span class="stat-label">dump1090 Status</span><span class="stat-val" id="st-dump">—</span></div>
+        </div>
     </div>
-    <script>
-        const map = L.map('map').setView([31.9, 35.9], 8);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-        
-        let data = [], filtered = [];
-        
-        async function load() {
-            try {
-                const r = await fetch('/api/v1/archive/aircraft');
-                data = await r.json();
-                filtered = data;
-                update();
-            } catch(e) {
-                console.log('API error:', e);
+</div>
+
+<!-- =====================================================================
+     AIRCRAFT DETAILS MODAL
+     ===================================================================== -->
+<div id="modal-overlay">
+    <div id="modal">
+        <div class="modal-hdr">
+            <div>
+                <div class="modal-hdr-title">✈ AIRCRAFT DETAILS</div>
+                <div class="modal-hdr-sub" id="modal-sub">Loading…</div>
+            </div>
+            <button id="modal-close" onclick="closeModal()">✖ CLOSE</button>
+        </div>
+
+        <div id="modal-known" class="modal-body">
+            <!-- IDENTIFICATION -->
+            <div class="msec">
+                <div class="msec-title">📋 IDENTIFICATION</div>
+                <div class="mrow"><span class="mlab">ICAO HEX:</span><span class="mval green" id="m-hex">—</span></div>
+                <div class="mrow"><span class="mlab">Callsign:</span><span class="mval green" id="m-callsign">—</span></div>
+                <div class="mrow"><span class="mlab">Country:</span><span class="mval" id="m-country">—</span></div>
+                <div class="mrow"><span class="mlab">Aircraft Type:</span><span class="mval" id="m-type">—</span></div>
+                <div class="mrow"><span class="mlab">Registration:</span><span class="mval" id="m-reg">—</span></div>
+                <div class="mrow"><span class="mlab">Airline:</span><span class="mval" id="m-airline">—</span></div>
+            </div>
+
+            <!-- POSITION -->
+            <div class="msec">
+                <div class="msec-title">📍 CURRENT POSITION</div>
+                <div class="mrow"><span class="mlab">Latitude:</span><span class="mval" id="m-lat">—</span></div>
+                <div class="mrow"><span class="mlab">Longitude:</span><span class="mval" id="m-lon">—</span></div>
+                <div class="mrow"><span class="mlab">Altitude:</span><span class="mval" id="m-alt">—</span></div>
+                <div class="mrow"><span class="mlab">Ground Speed:</span><span class="mval" id="m-spd">—</span></div>
+                <div class="mrow"><span class="mlab">Heading:</span><span class="mval" id="m-hdg">—</span></div>
+                <div class="mrow"><span class="mlab">Vertical Rate:</span><span class="mval" id="m-vrate">—</span></div>
+                <div class="mrow"><span class="mlab">GPS Transmitting:</span><span class="mval" id="m-gps">—</span></div>
+                <div class="mrow"><span class="mlab">Last Update:</span><span class="mval" id="m-ts">—</span></div>
+            </div>
+
+            <!-- SIGNAL -->
+            <div class="msec">
+                <div class="msec-title">📡 SIGNAL INFORMATION</div>
+                <div class="mrow"><span class="mlab">RSSI:</span><span class="mval orange" id="m-rssi">—</span></div>
+                <div class="mrow">
+                    <span class="mlab">Signal Quality:</span>
+                    <span class="mval" id="m-sigq">—</span>
+                </div>
+                <div class="sig-bar-wrap">
+                    <div class="sig-bar"><div class="sig-bar-fill" id="m-sigbar" style="width:0%"></div></div>
+                </div>
+                <div class="mrow" style="margin-top:6px"><span class="mlab">Est. Distance:</span><span class="mval" id="m-dist">—</span></div>
+                <div class="mrow"><span class="mlab">Calc. Method:</span><span class="mval" id="m-distmeth">—</span></div>
+                <div class="mrow"><span class="mlab">Observer:</span><span class="mval" id="m-obs">31.073541°N, 35.037383°E</span></div>
+                <div class="mrow"><span class="mlab">Azimuth:</span><span class="mval" id="m-az">—</span></div>
+                <div class="mrow"><span class="mlab">Elevation:</span><span class="mval" id="m-el">—</span></div>
+            </div>
+
+            <!-- CLASSIFICATION -->
+            <div class="msec">
+                <div class="msec-title">🤖 CLASSIFICATION</div>
+                <div class="mrow"><span class="mlab">Aircraft Class:</span><span class="mval" id="m-class">—</span></div>
+                <div class="mrow"><span class="mlab">Threat Level:</span><span id="m-threat-badge" class="badge threat-NONE">NONE</span></div>
+                <div class="mrow"><span class="mlab">Military Suspect:</span><span class="mval" id="m-mil">—</span></div>
+                <div class="mrow"><span class="mlab">Jammer Detected:</span><span class="mval" id="m-jam">—</span></div>
+                <div class="mrow"><span class="mlab">GPS Spoofing:</span><span class="mval" id="m-spoof">—</span></div>
+                <div class="msec-title" style="margin-top:10px">🤖 LLM ANALYSIS</div>
+                <div id="llm-box">—</div>
+            </div>
+
+            <!-- TRACKING / DB -->
+            <div class="msec">
+                <div class="msec-title">📊 TRACKING &amp; DATABASE</div>
+                <div class="mrow"><span class="mlab">DB Status:</span><span class="mval" id="m-dbstat">—</span></div>
+                <div class="mrow"><span class="mlab">First Seen:</span><span class="mval" id="m-first">—</span></div>
+                <div class="mrow"><span class="mlab">Last Seen:</span><span class="mval" id="m-last">—</span></div>
+                <div class="mrow"><span class="mlab">Message Count:</span><span class="mval" id="m-msgs">—</span></div>
+                <div class="mrow"><span class="mlab">Suspicious Flag:</span><span class="mval" id="m-sus">—</span></div>
+                <div class="mrow"><span class="mlab">User Notes:</span><span class="mval" id="m-notes">—</span></div>
+            </div>
+        </div>
+
+        <!-- UNKNOWN AIRCRAFT SECTION (shown when not in DB) -->
+        <div id="modal-unknown" style="display:none" class="modal-body">
+            <div class="msec" style="background:#1a0a00;border-color:#ff6b3555">
+                <div class="msec-title" style="color:var(--orange)">⚠ UNKNOWN AIRCRAFT — NOT IN DATABASE</div>
+                <div class="mrow"><span class="mlab">ICAO HEX:</span><span class="mval orange" id="mu-hex">—</span></div>
+                <div class="mrow"><span class="mlab">Altitude:</span><span class="mval" id="mu-alt">—</span></div>
+                <div class="mrow"><span class="mlab">Speed:</span><span class="mval" id="mu-spd">—</span></div>
+                <div class="mrow"><span class="mlab">Heading:</span><span class="mval" id="mu-hdg">—</span></div>
+                <div class="mrow"><span class="mlab">RSSI:</span><span class="mval" id="mu-rssi">—</span></div>
+                <div class="mrow"><span class="mlab">Est. Distance:</span><span class="mval" id="mu-dist">—</span></div>
+            </div>
+            <div class="msec">
+                <div class="msec-title">📝 ADD TO DATABASE</div>
+                <div class="form-row">
+                    <label class="form-label">AIRCRAFT TYPE</label>
+                    <select class="form-select" id="fu-type">
+                        <option value="">— Select type —</option>
+                        <option>Boeing 737</option>
+                        <option>Boeing 747</option>
+                        <option>Boeing 777</option>
+                        <option>Airbus A320</option>
+                        <option>Airbus A330</option>
+                        <option>Airbus A380</option>
+                        <option>C-130 Hercules</option>
+                        <option>F-16 Fighting Falcon</option>
+                        <option>F-35 Lightning II</option>
+                        <option>Cessna 172</option>
+                        <option>Helicopter</option>
+                        <option>UAV/Drone</option>
+                        <option>Unknown/Other</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label class="form-label">CALLSIGN (if known)</label>
+                    <input class="form-input" id="fu-callsign" type="text" placeholder="e.g. EL123">
+                </div>
+                <div class="form-row">
+                    <label class="form-label">COUNTRY</label>
+                    <input class="form-input" id="fu-country" type="text" placeholder="e.g. Israel">
+                </div>
+                <div class="form-row">
+                    <label class="form-label">AIRCRAFT CLASS</label>
+                    <select class="form-select" id="fu-class">
+                        <option>Civilian Commercial</option>
+                        <option>Civilian Private</option>
+                        <option>Military</option>
+                        <option>UAV/Drone</option>
+                        <option>Helicopter</option>
+                        <option>Other</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label class="form-label">NOTES</label>
+                    <textarea class="form-textarea" id="fu-notes" placeholder="Describe observed behavior, appearance, context…"></textarea>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:4px">
+                    <button class="submit-btn" onclick="submitUnknown()">💾 SAVE TO DB</button>
+                    <button class="cancel-btn" onclick="closeModal()">CANCEL</button>
+                </div>
+                <div id="fu-msg" style="margin-top:8px;font-size:0.78rem;color:var(--green);display:none"></div>
+            </div>
+        </div>
+
+        <!-- ACTION BUTTONS -->
+        <div class="modal-actions">
+            <button class="mact-btn" onclick="trackLive()">📍 TRACK LIVE</button>
+            <button class="mact-btn" onclick="exportData()">📤 EXPORT JSON</button>
+            <button class="mact-btn danger" onclick="closeModal()">✖ CLOSE</button>
+        </div>
+    </div>
+</div>
+
+<!-- =====================================================================
+     JAVASCRIPT
+     ===================================================================== -->
+<script>
+// ── Leaflet map ─────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true }).setView([31.1, 35.1], 9);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 18,
+}).addTo(map);
+
+// Observer marker
+L.circleMarker([31.073541, 35.037383], { radius: 6, color: '#00ff41', fillColor: '#00ff41', fillOpacity: 1 })
+  .addTo(map)
+  .bindTooltip('Observer', { permanent: false, direction: 'top' });
+
+// ── State ────────────────────────────────────────────────────────────────────
+let aircraftData  = {};   // hex → data from WS
+let mapMarkers    = {};   // hex → L.Marker
+let filterMode    = 'all';
+let _seenHexes    = new Set();
+let _records      = { alt: [], spd: [], rssi: [], uniq: [] };
+let _liveInterval = null;
+let _currentHex   = null;
+let _currentDetails = null;
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function showTab(name, evt) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelector(`#panel-${name}`).classList.add('active');
+    evt.currentTarget.classList.add('active');
+    if (name === 'records') renderRecords();
+    if (name === 'stats')   renderStats();
+}
+
+// ── Filter ────────────────────────────────────────────────────────────────────
+function applyFilter(mode, btn) {
+    filterMode = mode;
+    document.querySelectorAll('.fbtn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderTable();
+}
+
+// ── WebSocket live data ───────────────────────────────────────────────────────
+function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/api/v1/live/aircraft`);
+    ws.onmessage = (e) => {
+        const payload = JSON.parse(e.data);
+        const list = payload.aircraft || [];
+        list.forEach(ac => {
+            if (!ac.hex_code) return;
+            aircraftData[ac.hex_code] = ac;
+            updateMapMarker(ac);
+            updateRecords(ac);
+            if (!_seenHexes.has(ac.hex_code)) {
+                _seenHexes.add(ac.hex_code);
+                _records.uniq.unshift(ac);
+                if (_records.uniq.length > 10) _records.uniq.pop();
             }
+        });
+        renderTable();
+        updateTopBar();
+    };
+    ws.onerror = () => setTimeout(connectWS, 3000);
+    ws.onclose = () => setTimeout(connectWS, 3000);
+}
+
+// ── Map markers ───────────────────────────────────────────────────────────────
+function planeIcon(ac) {
+    const gps = ac.latitude != null;
+    const color = gps ? '#00ff41' : '#ff4444';
+    const heading = ac.track || 0;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+        <g transform="rotate(${heading},12,12)">
+        <path d="M12 2 L15 10 L22 12 L15 14 L14 20 L12 18 L10 20 L9 14 L2 12 L9 10 Z"
+              fill="${color}" stroke="#000" stroke-width="0.5" opacity="0.9"/>
+        </g></svg>`;
+    return L.divIcon({ html: svg, iconSize: [24,24], iconAnchor: [12,12], className: '' });
+}
+
+function updateMapMarker(ac) {
+    if (!ac.latitude || !ac.longitude) return;
+    const ll = [ac.latitude, ac.longitude];
+    if (mapMarkers[ac.hex_code]) {
+        mapMarkers[ac.hex_code].setLatLng(ll).setIcon(planeIcon(ac));
+    } else {
+        const m = L.marker(ll, { icon: planeIcon(ac) }).addTo(map);
+        m.on('click', () => showAircraftDetails(ac.hex_code));
+        m.bindTooltip(() => `${ac.hex_code}${ac.callsign ? ' / ' + ac.callsign : ''}`, { sticky: true });
+        mapMarkers[ac.hex_code] = m;
+    }
+}
+
+// ── Aircraft table ────────────────────────────────────────────────────────────
+function renderTable() {
+    const tbody = document.getElementById('ac-tbody');
+    let list = Object.values(aircraftData);
+
+    if (filterMode === 'gps')    list = list.filter(a => a.latitude != null);
+    if (filterMode === 'shadow') list = list.filter(a => a.latitude == null);
+    if (filterMode === 'mil')    list = list.filter(a => a.is_military);
+
+    list.sort((a,b) => (b.rssi||0) - (a.rssi||0));
+
+    tbody.innerHTML = '';
+    list.forEach(ac => {
+        const tr = document.createElement('tr');
+        const isShadow = ac.latitude == null;
+        const isMil    = ac.is_military;
+        if (isShadow) tr.className = 'shadow-row';
+        else if (isMil) tr.className = 'mil-row';
+        tr.onclick = () => showAircraftDetails(ac.hex_code);
+        tr.innerHTML = `
+            <td class="hex-col">${ac.hex_code}</td>
+            <td class="call-col">${ac.callsign || '—'}</td>
+            <td>${ac.altitude != null ? Math.round(ac.altitude).toLocaleString() : '—'}</td>
+            <td>${ac.ground_speed != null ? Math.round(ac.ground_speed) : '—'}</td>
+            <td class="rssi-col">${ac.rssi != null ? ac.rssi.toFixed(1) : '—'}</td>
+            <td>${ac.latitude != null ? '✓' : '✗'}</td>`;
+        tbody.appendChild(tr);
+    });
+}
+
+// ── Records ───────────────────────────────────────────────────────────────────
+function updateRecords(ac) {
+    // Max altitude
+    if (ac.altitude != null) {
+        _records.alt.push(ac);
+        _records.alt.sort((a,b) => b.altitude - a.altitude);
+        _records.alt = _records.alt.slice(0, 10);
+    }
+    // Max speed
+    if (ac.ground_speed != null) {
+        _records.spd.push(ac);
+        _records.spd.sort((a,b) => b.ground_speed - a.ground_speed);
+        _records.spd = _records.spd.slice(0, 10);
+    }
+    // Best RSSI (higher = closer)
+    if (ac.rssi != null) {
+        _records.rssi.push(ac);
+        _records.rssi.sort((a,b) => b.rssi - a.rssi);
+        _records.rssi = _records.rssi.slice(0, 10);
+    }
+}
+
+function renderRecords() {
+    fillRecTable('rec-alt',  _records.alt,  a => a.altitude != null ? Math.round(a.altitude).toLocaleString() : '—');
+    fillRecTable('rec-spd',  _records.spd,  a => a.ground_speed != null ? Math.round(a.ground_speed) : '—');
+    fillRecTable('rec-rssi', _records.rssi, a => a.rssi != null ? a.rssi.toFixed(1) : '—');
+    const tb = document.querySelector('#rec-uniq tbody');
+    tb.innerHTML = '';
+    _records.uniq.forEach(a => {
+        const tr = document.createElement('tr');
+        tr.onclick = () => showAircraftDetails(a.hex_code);
+        tr.style.cursor = 'pointer';
+        tr.innerHTML = `<td>${a.hex_code}</td><td>${a.callsign||'—'}</td><td>${a.first_seen ? a.first_seen.slice(11,19) : '—'}</td>`;
+        tb.appendChild(tr);
+    });
+}
+
+function fillRecTable(id, arr, valFn) {
+    const tb = document.querySelector(`#${id} tbody`);
+    tb.innerHTML = '';
+    const seen = new Set();
+    arr.forEach(a => {
+        if (seen.has(a.hex_code)) return;
+        seen.add(a.hex_code);
+        const tr = document.createElement('tr');
+        tr.onclick = () => showAircraftDetails(a.hex_code);
+        tr.style.cursor = 'pointer';
+        tr.innerHTML = `<td>${a.hex_code}</td><td>${a.callsign||'—'}</td><td class="rec-gold">${valFn(a)}</td>`;
+        tb.appendChild(tr);
+    });
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+function renderStats() {
+    const list = Object.values(aircraftData);
+    const gps = list.filter(a => a.latitude != null);
+    const withRssi = list.filter(a => a.rssi != null);
+    const withAlt  = list.filter(a => a.altitude != null);
+    const withSpd  = list.filter(a => a.ground_speed != null);
+
+    setText('st-total',   _seenHexes.size);
+    setText('st-visible', list.length);
+    setText('st-gps',     gps.length);
+    setText('st-shadow',  list.length - gps.length);
+    setText('st-rssi',    withRssi.length ? (withRssi.reduce((s,a)=>s+a.rssi,0)/withRssi.length).toFixed(1)+' dBm' : '—');
+    setText('st-alt',     withAlt.length  ? Math.round(withAlt.reduce((s,a)=>s+a.altitude,0)/withAlt.length).toLocaleString()+' ft' : '—');
+    setText('st-spd',     withSpd.length  ? Math.round(withSpd.reduce((s,a)=>s+a.ground_speed,0)/withSpd.length)+' kt' : '—');
+
+    // LLM status async
+    fetch('/api/v1/llm/status').then(r=>r.json()).then(d=>{
+        setText('st-llm', d.llm_enabled ? (d.ollama_connected ? '✅ ONLINE' : '⚠ NO OLLAMA') : '🔕 DISABLED');
+    }).catch(()=>setText('st-llm','—'));
+    fetch('/api/v1/dump1090/status').then(r=>r.json()).then(d=>{
+        setText('st-dump', d.dump1090_status === 'running' ? `✅ RUNNING (${d.aircraft_count} ac)` : '🔴 STOPPED');
+    }).catch(()=>setText('st-dump','—'));
+}
+
+// ── Top bar ───────────────────────────────────────────────────────────────────
+function updateTopBar() {
+    const list = Object.values(aircraftData);
+    const shadows = list.filter(a => a.latitude == null).length;
+    const withRssi = list.filter(a => a.rssi != null);
+    const avgRssi = withRssi.length ? (withRssi.reduce((s,a)=>s+a.rssi,0)/withRssi.length).toFixed(1) : '—';
+    setText('tb-count',   list.length);
+    setText('tb-shadows', shadows);
+    setText('tb-rssi',    avgRssi !== '—' ? avgRssi + ' dBm' : '—');
+}
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+async function showAircraftDetails(hexCode) {
+    _currentHex = hexCode;
+    document.getElementById('modal-sub').textContent = 'Loading…';
+    document.getElementById('modal-overlay').classList.add('open');
+
+    try {
+        const resp = await fetch(`/api/v1/aircraft/${hexCode}/details`);
+        if (!resp.ok) {
+            // Build minimal from live data
+            const live = aircraftData[hexCode] || {};
+            populateUnknown(hexCode, live);
+            return;
         }
-        
-        function update() {
-            document.getElementById('total').textContent = filtered.length;
-            document.getElementById('mil').textContent = filtered.filter(a=>a.mil).length;
-            document.getElementById('shadow').textContent = filtered.filter(a=>!a.pos).length;
-            
-            const tbody = document.getElementById('tbody');
-            tbody.innerHTML = '';
-            filtered.forEach(ac => {
-                const tr = tbody.insertRow();
-                tr.className = !ac.pos ? 'shadow' : ac.mil ? 'mil' : '';
-                tr.innerHTML = `<td>${ac.hex}</td><td>${ac.callsign}</td><td>${ac.type}</td><td>${ac.pos?'✓':'✗'}</td>`;
-            });
+        const data = await resp.json();
+        _currentDetails = data;
+        if (data.database && data.database.in_database) {
+            populateKnown(data);
+        } else {
+            // Show known modal but with unknown warning
+            populateKnown(data);
+            const badge = document.getElementById('m-dbstat');
+            badge.textContent = '❌ NOT IN DATABASE';
+            badge.className = 'mval red';
         }
-        
-        function filter(t) {
-            if (t === 'all') filtered = data;
-            else if (t === 'mil') filtered = data.filter(a=>a.mil);
-            else if (t === 'shadow') filtered = data.filter(a=>!a.pos);
-            update();
+        startLiveUpdates(hexCode);
+    } catch (err) {
+        console.error('Details fetch error:', err);
+        const live = aircraftData[hexCode] || {};
+        populateUnknown(hexCode, live);
+    }
+}
+
+function populateKnown(d) {
+    document.getElementById('modal-known').style.display = '';
+    document.getElementById('modal-unknown').style.display = 'none';
+
+    const pos = d.position || {};
+    const sig = d.signal || {};
+    const cls = d.classification || {};
+    const trk = d.tracking || {};
+    const db  = d.database || {};
+    const ac  = d.aircraft || {};
+    const llm = d.llm_analysis || {};
+
+    document.getElementById('modal-sub').textContent =
+        `${d.icao_hex}  |  ${d.callsign || 'NO CALLSIGN'}`;
+
+    setText('m-hex',      d.icao_hex || '—');
+    setText('m-callsign', d.callsign || '—');
+    setText('m-country',  d.country  || '—');
+    setText('m-type',     ac.type    || '—');
+    setText('m-reg',      d.registration || '—');
+    setText('m-airline',  d.airline   || '—');
+
+    const altFt = pos.altitude_ft;
+    const altM  = pos.altitude_m;
+    setText('m-alt', fmtAlt(altFt, altM));
+    const spdKt  = pos.speed_kt;
+    const spdKmh = pos.speed_kmh;
+    setText('m-spd', fmtSpd(spdKt, spdKmh));
+    setText('m-lat', pos.latitude  != null ? pos.latitude.toFixed(6) + '°' : '—');
+    setText('m-lon', pos.longitude != null ? pos.longitude.toFixed(6) + '°' : '—');
+    const hdg = pos.heading;
+    setText('m-hdg', hdg != null ? `${Math.round(hdg)}° ${pos.heading_cardinal || ''}` : '—');
+    const vr = pos.vertical_rate;
+    if (vr != null) {
+        const vrEl = document.getElementById('m-vrate');
+        vrEl.textContent = `${vr > 0 ? '+' : ''}${Math.round(vr)} ft/min ${vr > 0 ? '↗' : vr < 0 ? '↘' : '→'}`;
+        vrEl.className = 'mval ' + (vr > 0 ? 'green' : vr < 0 ? 'orange' : '');
+    } else {
+        document.getElementById('m-vrate').textContent = '—';
+    }
+    setText('m-gps', cls.gps_transmitting ? '✓ YES' : '✗ NO (shadow mode)');
+    setText('m-ts',  pos.timestamp ? relativeTime(pos.timestamp) : '—');
+
+    setText('m-rssi', sig.rssi_dbm != null ? sig.rssi_dbm.toFixed(1) + ' dBm' : '—');
+    const sq = sig.signal_quality;
+    setText('m-sigq', sq != null ? `${sq}%` : '—');
+    document.getElementById('m-sigbar').style.width = (sq || 0) + '%';
+    setText('m-dist', sig.distance_km != null ? `~${sig.distance_km} km` : '—');
+    setText('m-distmeth', sig.distance_method || '—');
+    setText('m-az',  sig.azimuth   != null ? sig.azimuth + '°' : '—');
+    setText('m-el',  sig.elevation != null ? sig.elevation + '°' : '—');
+
+    setText('m-class', cls.aircraft_class || '—');
+    const tl = cls.threat_level || 'UNKNOWN';
+    const badge = document.getElementById('m-threat-badge');
+    badge.textContent = tl;
+    badge.className = `badge threat-${tl}`;
+    setText('m-mil',   cls.military_suspect ? '⚠ YES' : '✓ NO');
+    setText('m-jam',   cls.jammer_detected  ? '⚠ YES' : '✓ NO');
+    setText('m-spoof', cls.spoofing_detected ? '⚠ YES' : '✓ NO');
+
+    document.getElementById('llm-box').textContent = llm.description || 'LLM analysis not available.';
+
+    const dbstat = document.getElementById('m-dbstat');
+    if (db.in_database) {
+        dbstat.textContent = '✅ IN DATABASE';
+        dbstat.className = 'mval green';
+    } else {
+        dbstat.textContent = '❌ NOT IN DATABASE';
+        dbstat.className = 'mval orange';
+    }
+    setText('m-first', trk.first_seen ? trk.first_seen.replace('T',' ').slice(0,19) : '—');
+    setText('m-last',  trk.last_seen  ? trk.last_seen.replace('T',' ').slice(0,19)  : '—');
+    setText('m-msgs',  trk.message_count != null ? trk.message_count.toLocaleString() : '—');
+    setText('m-sus',   db.suspicious ? '⚠ FLAGGED' : '✓ NO');
+    setText('m-notes', db.user_notes || '—');
+}
+
+function populateUnknown(hexCode, live) {
+    document.getElementById('modal-known').style.display = 'none';
+    document.getElementById('modal-unknown').style.display = '';
+    document.getElementById('modal-sub').textContent = `${hexCode} — UNKNOWN AIRCRAFT`;
+    document.getElementById('fu-msg').style.display = 'none';
+
+    setText('mu-hex',  hexCode);
+    const altFt = live.altitude;
+    setText('mu-alt',  altFt != null ? Math.round(altFt).toLocaleString() + ' ft' : '—');
+    const spd = live.ground_speed;
+    setText('mu-spd',  spd != null ? Math.round(spd) + ' kt' : '—');
+    const hdg = live.track;
+    setText('mu-hdg',  hdg != null ? Math.round(hdg) + '°' : '—');
+    const rssi = live.rssi;
+    setText('mu-rssi', rssi != null ? rssi.toFixed(1) + ' dBm' : '—');
+    if (rssi != null) {
+        const d = rssiToDistance(rssi);
+        setText('mu-dist', `~${d} km (Friis)`);
+    } else {
+        setText('mu-dist', '—');
+    }
+}
+
+async function submitUnknown() {
+    const hexCode = _currentHex;
+    const body = {
+        icao_hex:      hexCode,
+        aircraft_type: document.getElementById('fu-type').value,
+        callsign:      document.getElementById('fu-callsign').value,
+        country:       document.getElementById('fu-country').value,
+        aircraft_class:document.getElementById('fu-class').value,
+        user_notes:    document.getElementById('fu-notes').value,
+    };
+    try {
+        const resp = await fetch('/api/v1/aircraft/unknown/add', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(body)
+        });
+        const result = await resp.json();
+        const msg = document.getElementById('fu-msg');
+        if (result.success) {
+            msg.textContent = `✅ ${result.message}`;
+            msg.style.color = 'var(--green)';
+        } else {
+            msg.textContent = `❌ Error: ${result.detail || 'Unknown error'}`;
+            msg.style.color = 'var(--red)';
         }
-        
-        load();
-    </script>
+        msg.style.display = 'block';
+    } catch (e) {
+        const msg = document.getElementById('fu-msg');
+        msg.textContent = `❌ Network error: ${e.message}`;
+        msg.style.color = 'var(--red)';
+        msg.style.display = 'block';
+    }
+}
+
+// ── Live position updates inside modal ────────────────────────────────────────
+function startLiveUpdates(hexCode) {
+    if (_liveInterval) clearInterval(_liveInterval);
+    _liveInterval = setInterval(async () => {
+        if (!document.getElementById('modal-overlay').classList.contains('open')) {
+            clearInterval(_liveInterval);
+            return;
+        }
+        try {
+            const resp = await fetch(`/api/v1/aircraft/${hexCode}/position`);
+            if (!resp.ok) return;
+            const pos = await resp.json();
+            updateModalPosition(pos);
+        } catch (_) {}
+    }, 2000);
+}
+
+function updateModalPosition(pos) {
+    setText('m-alt', fmtAlt(pos.altitude_ft, pos.altitude_m));
+    setText('m-spd', fmtSpd(pos.speed_kt, pos.speed_kmh));
+    setText('m-hdg', pos.heading != null ? `${Math.round(pos.heading)}°` : '—');
+    setText('m-rssi', pos.rssi_dbm != null ? pos.rssi_dbm.toFixed(1) + ' dBm' : '—');
+    if (pos.rssi_dbm != null) {
+        const d  = rssiToDistance(pos.rssi_dbm);
+        const sq = rssiToQuality(pos.rssi_dbm);
+        setText('m-dist', `~${d} km`);
+        setText('m-sigq', sq + '%');
+        document.getElementById('m-sigbar').style.width = sq + '%';
+    }
+    setText('m-ts', pos.timestamp ? relativeTime(pos.timestamp) : '—');
+}
+
+function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('open');
+    if (_liveInterval) { clearInterval(_liveInterval); _liveInterval = null; }
+    _currentHex = null;
+}
+
+function trackLive() {
+    if (!_currentHex) return;
+    const ac = aircraftData[_currentHex];
+    if (ac && ac.latitude && ac.longitude) {
+        map.setView([ac.latitude, ac.longitude], 12, { animate: true });
+        closeModal();
+    }
+}
+
+function exportData() {
+    if (!_currentDetails) return;
+    const blob = new Blob([JSON.stringify(_currentDetails, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `aircraft_${_currentDetails.icao_hex}.json`;
+    a.click();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function setText(id, val) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val != null ? val : '—';
+}
+
+function rssiToDistance(rssi) {
+    // Friis: d_km = 10^((EIRP - rssi - 32.45 - 20*log10(1090)) / 20)
+    const EIRP = 41.0;
+    const fspl = EIRP - rssi;
+    const d = Math.pow(10, (fspl - 32.45 - 20 * Math.log10(1090)) / 20);
+    return Math.max(0.1, d).toFixed(1);
+}
+
+/** Map [-100, -50] dBm linearly to [0, 100] signal quality. */
+function rssiToQuality(rssi) {
+    return Math.max(0, Math.min(100, Math.round((rssi + 100) * 2)));
+}
+
+/** Format altitude in ft + optional m. */
+function fmtAlt(altFt, altM) {
+    if (altFt == null) return '—';
+    const s = Math.round(altFt).toLocaleString() + ' ft';
+    return altM != null ? s + ` / ${altM.toLocaleString()} m` : s;
+}
+
+/** Format speed in kt + optional km/h. */
+function fmtSpd(spdKt, spdKmh) {
+    if (spdKt == null) return '—';
+    const s = Math.round(spdKt) + ' kt';
+    return spdKmh != null ? s + ` / ${spdKmh} km/h` : s;
+}
+
+function relativeTime(isoStr) {
+    try {
+        const diff = (Date.now() - new Date(isoStr).getTime()) / 1000;
+        if (diff < 5)  return 'just now';
+        if (diff < 60) return `${Math.round(diff)}s ago`;
+        if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+        return `${Math.round(diff/3600)}h ago`;
+    } catch (_) { return isoStr; }
+}
+
+// Close modal on overlay click
+document.getElementById('modal-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('modal-overlay')) closeModal();
+});
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+connectWS();
+</script>
 </body>
 </html>
+
