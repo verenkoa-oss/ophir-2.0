@@ -6,8 +6,8 @@ Replace or extend ThreatDetector with more sophisticated AI/ML logic as needed.
 """
 
 import logging
-from datetime import datetime
 from collections import deque
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +29,9 @@ class ThreatDetector:
         Ring-buffer of recent measurement snapshots — exposed so that
         GET /threat/history in main.py can iterate over it.
 
-    detect_anomaly() -> dict | None
-        Returns a description of the *most recent* anomaly found across
-        all tracked aircraft, or None if everything looks normal.
+    detect_anomaly(aircraft_data=None) -> dict | None
+        Returns a description of the most recently detected anomaly, or None.
+        When aircraft_data is provided the snapshot is recorded first.
     """
 
     def __init__(self):
@@ -82,12 +82,16 @@ class ThreatDetector:
 
         self._prev_state[hex_code] = snapshot
 
-    def detect_anomaly(self) -> dict | None:
+    def detect_anomaly(self, aircraft_data: dict | None = None) -> dict | None:
         """
         Return the most recently detected anomaly, or None.
-        Also performs a fresh pass over current noise_history to catch
-        absolute-value threshold violations.
+
+        If aircraft_data is provided, update internal state first, then check
+        for anomalies (supports the calling convention detector.detect_anomaly(ac)).
         """
+        if aircraft_data is not None:
+            self.update(aircraft_data)
+
         # Return most recent accumulated anomaly first
         if self._anomalies:
             return dict(self._anomalies[-1])
@@ -125,6 +129,7 @@ class ThreatDetector:
                     "RAPID_DESCENT",
                     f"Altitude dropped {alt_prev - alt_cur:.0f} ft in one update "
                     f"({alt_prev:.0f} → {alt_cur:.0f} ft)",
+                    current,
                 )
 
         # Unusual speed change
@@ -135,6 +140,7 @@ class ThreatDetector:
                     "UNUSUAL_SPEED_CHANGE",
                     f"Speed changed by {abs(spd_cur - spd_prev):.0f} kt "
                     f"({spd_prev:.0f} → {spd_cur:.0f} kt)",
+                    current,
                 )
 
         # RSSI spike (possible spoofing / interference)
@@ -145,6 +151,7 @@ class ThreatDetector:
                     "RSSI_SPIKE",
                     f"RSSI jumped by {abs(rssi_cur - rssi_prev):.1f} dBm "
                     f"({rssi_prev:.1f} → {rssi_cur:.1f} dBm)",
+                    current,
                 )
 
         return None
@@ -158,19 +165,21 @@ class ThreatDetector:
         if altitude is not None and altitude < 0:
             return self._make_anomaly(
                 hex_code, "NEGATIVE_ALTITUDE",
-                f"Aircraft reporting negative altitude: {altitude} ft"
+                f"Aircraft reporting negative altitude: {altitude} ft",
+                snapshot,
             )
 
         if ground_speed is not None and ground_speed > 700:
             return self._make_anomaly(
                 hex_code, "EXTREME_SPEED",
-                f"Aircraft reporting extreme speed: {ground_speed} kt"
+                f"Aircraft reporting extreme speed: {ground_speed} kt",
+                snapshot,
             )
 
         return None
 
     @staticmethod
-    def _make_anomaly(hex_code: str, anomaly_type: str, description: str) -> dict:
+    def _make_anomaly(hex_code: str, anomaly_type: str, description: str, data: dict) -> dict:
         return {
             "hex_code": hex_code,
             "anomaly_type": anomaly_type,
@@ -190,51 +199,7 @@ _detector_instance: ThreatDetector | None = None
 
 
 def get_detector() -> ThreatDetector:
-    """Factory: return the module-level ThreatDetector singleton."""
-Detects anomalies in RF / ADS-B signal streams.
-"""
-
-import logging
-from collections import deque
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-
-class ThreatDetector:
-    """Detect threats from aircraft and RF signal patterns."""
-
-    def __init__(self):
-        self.noise_history: deque = deque(maxlen=1000)
-        self.threat_log: list = []
-
-    def update(self, noise_dbm: float, aircraft_count: int = 0):
-        """Record a new data point."""
-        self.noise_history.append(
-            {
-                "time": datetime.utcnow().isoformat(),
-                "noise_dbm": noise_dbm,
-                "aircraft_count": aircraft_count,
-            }
-        )
-
-    def detect_anomaly(self) -> dict | None:
-        """Return an anomaly dict if one is detected, otherwise None."""
-        if not self.noise_history:
-            return None
-
-        latest = self.noise_history[-1]
-        if latest["noise_dbm"] > self.NOISE_ANOMALY_THRESHOLD:
-            return {
-                "type": "HIGH_POWER_SIGNAL",
-                "noise_dbm": latest["noise_dbm"],
-                "timestamp": latest["timestamp"],
-            }
-        return None
-
-
-def get_detector() -> ThreatDetector:
-    """Return a singleton ThreatDetector instance."""
+    """Return the module-level ThreatDetector singleton."""
     global _detector_instance
     if _detector_instance is None:
         _detector_instance = ThreatDetector()
