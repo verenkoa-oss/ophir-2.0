@@ -13,8 +13,12 @@ import logging
 import random
 from datetime import datetime
 from core.sdr import SDRReader as _BaseSDRReader
+import config
 
 logger = logging.getLogger(__name__)
+
+# dBm above rssi_threshold that counts as "strong" signal
+_STRONG_SIGNAL_OFFSET_DB = 30
 
 
 class SDRReader(_BaseSDRReader):
@@ -28,6 +32,27 @@ class SDRReader(_BaseSDRReader):
         self._noise_history: list = []
         self._running = False
         self._task = None
+        # Antenna profile – updated at runtime via set_antenna_mode()
+        self._antenna_mode: config.AntennaMode = config.DEFAULT_ANTENNA_MODE
+        self._antenna_profile: dict = config.ANTENNA_PROFILES[self._antenna_mode]
+
+    # ------------------------------------------------------------------
+    # Antenna mode management
+    # ------------------------------------------------------------------
+
+    def set_antenna_mode(self, mode: config.AntennaMode) -> None:
+        """Switch the active antenna profile (no restart required)."""
+        self._antenna_mode = mode
+        self._antenna_profile = config.ANTENNA_PROFILES[mode]
+        logger.info(
+            f"📡 Antenna mode switched to {mode.value} "
+            f"(rssi_threshold={self._antenna_profile['rssi_threshold']}, "
+            f"gain={self._antenna_profile['gain']})"
+        )
+
+    @property
+    def rssi_threshold(self) -> int:
+        return self._antenna_profile["rssi_threshold"]
 
     # ------------------------------------------------------------------
     # Background tracking loop
@@ -116,15 +141,20 @@ class SDRReader(_BaseSDRReader):
                 "signal_type": "NO_SIGNAL",
                 "confidence": 0,
                 "noise_dbm": 0,
+                "antenna_mode": self._antenna_mode.value,
             }
 
         recent = self._noise_history[-20:]
         avg_rssi = sum(r["noise_dbm"] for r in recent) / len(recent)
 
-        if avg_rssi >= -60:
+        # Use antenna-profile threshold to classify signal strength
+        threshold = self.rssi_threshold  # e.g. -75 GARAGE, -90 AIR
+        strong_thresh = threshold + _STRONG_SIGNAL_OFFSET_DB
+
+        if avg_rssi >= strong_thresh:
             signal_type = "STRONG"
             confidence = 0.9
-        elif avg_rssi >= -80:
+        elif avg_rssi >= threshold:
             signal_type = "NORMAL"
             confidence = 0.75
         else:
@@ -136,8 +166,15 @@ class SDRReader(_BaseSDRReader):
             "confidence": confidence,
             "noise_dbm": round(avg_rssi, 2),
             "samples": len(recent),
+            "antenna_mode": self._antenna_mode.value,
         }
 
     async def get_signal_events(self) -> list:
         """Return recent signal events."""
         return list(self._signal_events)
+
+    def get_last_signal_timestamp(self) -> str | None:
+        """Return the timestamp of the most recent signal event, or None."""
+        if self._signal_events:
+            return self._signal_events[-1].get("timestamp")
+        return None

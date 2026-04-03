@@ -7,7 +7,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 import asyncio
 import json
 import logging
-from datetime import datetime
+import subprocess
+import time
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -30,6 +32,7 @@ from core.threat_detector import get_detector
 from core.database import db_manager
 from core.llm import LLMAnalyzer
 from db.schema import Aircraft
+import config
 
 sdr_manager = None
 classifier = None
@@ -44,21 +47,47 @@ _ws_threats_clients: list[WebSocket] = []
 _tracking_task = None
 _broadcast_task = None
 
+# ---------------------------------------------------------------------------
+# Runtime state – managed by the three control endpoints
+# ---------------------------------------------------------------------------
+
+# Antenna mode: initialised from config default
+_antenna_mode: config.AntennaMode = config.DEFAULT_ANTENNA_MODE
+
+# LLM enabled flag
+_llm_enabled: bool = config.LLM_ENABLED_DEFAULT
+
+# dump1090 uptime tracking (monotonic clock reference, set only when confirmed running)
+_dump1090_start_monotonic: float | None = None
+
+# Delay between stop and start during restart
+_DUMP1090_RESTART_DELAY: float = 1.0
+
+# Timeout for quick Ollama connectivity check in the status endpoint
+_OLLAMA_STATUS_CHECK_TIMEOUT: float = 3.0
+
 @app.on_event("startup")
 async def startup():
     global sdr_manager, classifier, detector, llm_analyzer, _tracking_task, _broadcast_task
+    global _antenna_mode, _llm_enabled, _dump1090_start_monotonic
     logger.info("="*80)
     logger.info("🚀 OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR | STARTING...")
     try:
         sdr_manager = SDRReader()
+        # Apply the default antenna mode from config
+        sdr_manager.set_antenna_mode(_antenna_mode)
         _tracking_task = asyncio.create_task(sdr_manager.start_tracking())
+        # Only record uptime reference if dump1090 is actually reachable
+        if _get_dump1090_pid():
+            _dump1090_start_monotonic = time.monotonic()
         logger.info("✅ Connected to dump1090 - REAL DATA MODE (PORT 30001)")
         classifier = get_classifier()
         logger.info("✅ AI Signal Classifier LOADED")
         detector = get_detector()
         logger.info("✅ Threat Detector INITIALIZED")
         llm_analyzer = LLMAnalyzer()
-        logger.info("✅ LLM Analyzer INITIALIZED")
+        llm_analyzer.set_enabled(_llm_enabled)
+        logger.info(f"✅ LLM Analyzer INITIALIZED (enabled={_llm_enabled})")
         # Background task: broadcast live aircraft to WebSocket clients
         _broadcast_task = asyncio.create_task(_broadcast_loop())
         logger.info("="*80)
@@ -223,12 +252,14 @@ async def analyze_aircraft(aircraft_data: dict):
     hex_code = aircraft_data.get("hex_code", "UNKNOWN")
     anomaly_type = aircraft_data.get("anomaly_type", "GENERAL_ANALYSIS")
 
-    if llm_analyzer:
+    if llm_analyzer and llm_analyzer.enabled:
         try:
             analysis = await llm_analyzer.analyze_anomaly(hex_code, anomaly_type, aircraft_data)
         except Exception as e:
             logger.error(f"LLM analysis error: {e}")
             analysis = "LLM analysis unavailable"
+    elif llm_analyzer and not llm_analyzer.enabled:
+        analysis = "LLM analysis is currently disabled. Enable via POST /api/v1/llm/toggle."
     else:
         analysis = "LLM analyzer not initialized"
 
@@ -241,7 +272,7 @@ async def analyze_aircraft(aircraft_data: dict):
         "hex_code": hex_code,
         "analysis": analysis,
         "classification": classification,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -310,6 +341,287 @@ async def ws_live_threats(websocket: WebSocket):
         if websocket in _ws_threats_clients:
             _ws_threats_clients.remove(websocket)
         logger.info("WS /api/v1/threats/live client disconnected")
+
+
+# ---------------------------------------------------------------------------
+# Button 1: Antenna Mode Switch (GARAGE / AIR)
+# ---------------------------------------------------------------------------
+
+@app.put("/api/v1/antenna/mode")
+async def set_antenna_mode(body: dict):
+    """Switch the active antenna profile at runtime (no restart required).
+
+    Request body: {"mode": "GARAGE" | "AIR"}
+    """
+    global _antenna_mode
+
+    raw_mode = body.get("mode", "").upper()
+    try:
+        mode = config.AntennaMode(raw_mode)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode '{raw_mode}'. Accepted values: GARAGE, AIR",
+        )
+
+    _antenna_mode = mode
+    profile = config.ANTENNA_PROFILES[mode]
+
+    if sdr_manager:
+        sdr_manager.set_antenna_mode(mode)
+
+    logger.info(
+        f"📡 Antenna mode switched to {mode.value} at {datetime.now(timezone.utc).isoformat()}"
+    )
+    return {
+        "antenna_mode": mode.value,
+        "rssi_threshold": profile["rssi_threshold"],
+        "gain": profile["gain"],
+        "description": profile["description"],
+        "status": "switched",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/v1/antenna/mode")
+async def get_antenna_mode():
+    """Return the currently active antenna profile."""
+    profile = config.ANTENNA_PROFILES[_antenna_mode]
+    return {
+        "antenna_mode": _antenna_mode.value,
+        "rssi_threshold": profile["rssi_threshold"],
+        "gain": profile["gain"],
+        "description": profile["description"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Button 2: dump1090 Process Management (ON / OFF / RESTART / STATUS)
+# ---------------------------------------------------------------------------
+
+def _get_dump1090_pid() -> int | None:
+    """Return PID of a running dump1090 process, or None."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "dump1090"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            pid_str = result.stdout.strip().splitlines()[0]
+            return int(pid_str)
+    except Exception:
+        pass
+    return None
+
+
+def _dump1090_uptime() -> float | None:
+    """Return seconds since dump1090 start was last recorded, or None."""
+    if _dump1090_start_monotonic is None:
+        return None
+    return round(time.monotonic() - _dump1090_start_monotonic, 1)
+
+
+@app.get("/api/v1/dump1090/status")
+async def dump1090_status():
+    """Return current dump1090 operational status."""
+    pid = _get_dump1090_pid()
+    running = pid is not None
+    aircraft_count = len(sdr_manager.aircraft_dict) if sdr_manager else 0
+    last_msg = sdr_manager.get_last_signal_timestamp() if sdr_manager else None
+
+    return {
+        "dump1090_status": "running" if running else "stopped",
+        "pid": pid,
+        "connected": (sdr_manager.connected if sdr_manager else False),
+        "uptime_seconds": _dump1090_uptime(),
+        "aircraft_count": aircraft_count,
+        "last_message": last_msg,
+        "error": None,
+    }
+
+
+@app.post("/api/v1/dump1090/start")
+async def dump1090_start():
+    """Start dump1090 service (uses systemctl if available, otherwise direct)."""
+    global _dump1090_start_monotonic
+
+    pid = _get_dump1090_pid()
+    if pid:
+        return {
+            "dump1090_status": "running",
+            "pid": pid,
+            "action": "already_running",
+            "error": None,
+        }
+
+    error_msg: str | None = None
+    # Try systemctl first, fall back to direct binary
+    for cmd in [
+        ["systemctl", "start", "dump1090-fa"],
+        ["systemctl", "start", "dump1090-mutability"],
+        ["systemctl", "start", "dump1090"],
+    ]:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if proc.returncode == 0:
+                _dump1090_start_monotonic = time.monotonic()
+                logger.info(f"✅ dump1090 started via: {' '.join(cmd)}")
+                return {
+                    "dump1090_status": "running",
+                    "action": "started",
+                    "command": " ".join(cmd),
+                    "error": None,
+                }
+            error_msg = proc.stderr.strip() or proc.stdout.strip()
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            error_msg = str(e)
+
+    logger.error(f"❌ Failed to start dump1090: {error_msg}")
+    return {
+        "dump1090_status": "stopped",
+        "action": "start_failed",
+        "error": "Could not start dump1090. Is it installed?",
+    }
+
+
+@app.post("/api/v1/dump1090/stop")
+async def dump1090_stop():
+    """Stop dump1090 service."""
+    global _dump1090_start_monotonic
+
+    pid = _get_dump1090_pid()
+    if not pid:
+        return {
+            "dump1090_status": "stopped",
+            "action": "already_stopped",
+            "error": None,
+        }
+
+    error_msg: str | None = None
+    for cmd in [
+        ["systemctl", "stop", "dump1090-fa"],
+        ["systemctl", "stop", "dump1090-mutability"],
+        ["systemctl", "stop", "dump1090"],
+    ]:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if proc.returncode == 0:
+                _dump1090_start_monotonic = None
+                logger.info(f"🛑 dump1090 stopped via: {' '.join(cmd)}")
+                # Disconnect SDR reader so it stops buffering stale data
+                if sdr_manager:
+                    sdr_manager.connected = False
+                return {
+                    "dump1090_status": "stopped",
+                    "action": "stopped",
+                    "command": " ".join(cmd),
+                    "error": None,
+                }
+            error_msg = proc.stderr.strip() or proc.stdout.strip()
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            error_msg = str(e)
+
+    # As last resort try SIGTERM on the PID
+    if pid:
+        try:
+            subprocess.run(["kill", str(pid)], check=True, timeout=5)
+            _dump1090_start_monotonic = None
+            if sdr_manager:
+                sdr_manager.connected = False
+            logger.info(f"🛑 dump1090 (PID {pid}) terminated via SIGTERM")
+            return {
+                "dump1090_status": "stopped",
+                "action": "stopped",
+                "command": f"kill {pid}",
+                "error": None,
+            }
+        except Exception as e:
+            error_msg = str(e)
+
+    logger.error(f"❌ Failed to stop dump1090: {error_msg}")
+    return {
+        "dump1090_status": "running",
+        "action": "stop_failed",
+        "error": "Could not stop dump1090.",
+    }
+
+
+@app.post("/api/v1/dump1090/restart")
+async def dump1090_restart():
+    """Restart dump1090 service."""
+    stop_result = await dump1090_stop()
+    await asyncio.sleep(_DUMP1090_RESTART_DELAY)
+    start_result = await dump1090_start()
+    return {
+        "dump1090_status": start_result.get("dump1090_status"),
+        "action": "restarted",
+        "stop_result": stop_result,
+        "start_result": start_result,
+        "error": start_result.get("error"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Button 3: LLM Toggle (Enable / Disable AI analysis)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/llm/toggle")
+async def llm_toggle():
+    """Toggle LLM analysis on/off at runtime."""
+    global _llm_enabled
+
+    if not llm_analyzer:
+        raise HTTPException(status_code=503, detail="LLM analyzer not initialized")
+
+    _llm_enabled = not llm_analyzer.enabled
+    llm_analyzer.set_enabled(_llm_enabled)
+    action = "enabled" if _llm_enabled else "disabled"
+    msg = (
+        "LLM analysis enabled. Full AI analysis resumed."
+        if _llm_enabled
+        else "LLM analysis disabled. Analyze endpoint will return placeholder responses."
+    )
+    logger.info(f"🤖 LLM {action} at {datetime.now(timezone.utc).isoformat()}")
+    return {
+        "llm_enabled": _llm_enabled,
+        "action": action,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message": msg,
+    }
+
+
+@app.get("/api/v1/llm/status")
+async def llm_status():
+    """Return current LLM / Ollama status."""
+    if not llm_analyzer:
+        return {
+            "llm_enabled": False,
+            "ollama_connected": False,
+            "model": config.OLLAMA_MODEL,
+            "response_time_ms": None,
+            "last_analysis": None,
+        }
+
+    # Refresh connection state without blocking long
+    try:
+        ollama_ok = await asyncio.wait_for(
+            llm_analyzer.check_connection(), timeout=_OLLAMA_STATUS_CHECK_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        ollama_ok = False
+
+    return {
+        "llm_enabled": llm_analyzer.enabled,
+        "ollama_connected": ollama_ok,
+        "model": llm_analyzer.model,
+        "response_time_ms": llm_analyzer.response_time_ms,
+        "last_analysis": llm_analyzer.last_analysis,
+    }
+
 
 if __name__ == "__main__":
     logger.info("🚀 Starting OPHIR 2.0 Server")
