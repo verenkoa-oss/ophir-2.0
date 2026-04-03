@@ -22,3 +22,5 @@ data/ophir_archive/*
 *~
 .pytest_cache/
 htmlcov/
+db/signal_training.db
+db/records.db

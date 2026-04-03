@@ -64,6 +64,20 @@ ANTENNA_PROFILES: dict = {
 
 DEFAULT_ANTENNA_MODE: AntennaMode = AntennaMode.AIR
 
+# Observer location (used for distance calculations)
+OBSERVER_LAT: float = 31.073541
+OBSERVER_LON: float = 35.037383
+
+# Distance calculation parameters
+# Friis transmission equation constants for ADS-B 1090 MHz
+DISTANCE_FREQ_HZ: float = 1_090_000_000.0   # ADS-B carrier frequency
+DISTANCE_TX_POWER_DBM: float = 18.0          # Typical ADS-B transponder Tx power (dBm)
+DISTANCE_TX_GAIN_DBI: float = 0.0            # Transponder antenna gain (dBi)
+DISTANCE_RX_GAIN_DBI: float = 3.0            # Receiver antenna gain (dBi)
+# Limits for plausible distance estimates
+DISTANCE_MIN_KM: float = 0.1
+DISTANCE_MAX_KM: float = 400.0
+
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "mistral:latest"
 OLLAMA_TIMEOUT = 60.0

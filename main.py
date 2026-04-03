@@ -31,6 +31,8 @@ from core.signal_classifier import get_classifier
 from core.threat_detector import get_detector
 from core.database import db_manager
 from core.llm import LLMAnalyzer
+from core.distance_calculator import estimate_distance
+from core.learning_engine import get_learning_engine
 from db.schema import Aircraft
 import config
 
@@ -38,6 +40,7 @@ sdr_manager = None
 classifier = None
 detector = None
 llm_analyzer = None
+learning_engine = None
 
 # Active WebSocket connections
 _ws_aircraft_clients: list[WebSocket] = []
@@ -68,7 +71,8 @@ _OLLAMA_STATUS_CHECK_TIMEOUT: float = 3.0
 
 @app.on_event("startup")
 async def startup():
-    global sdr_manager, classifier, detector, llm_analyzer, _tracking_task, _broadcast_task
+    global sdr_manager, classifier, detector, llm_analyzer, learning_engine
+    global _tracking_task, _broadcast_task
     global _antenna_mode, _llm_enabled, _dump1090_start_monotonic
     logger.info("="*80)
     logger.info("🚀 OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR | STARTING...")
@@ -88,6 +92,9 @@ async def startup():
         llm_analyzer = LLMAnalyzer()
         llm_analyzer.set_enabled(_llm_enabled)
         logger.info(f"✅ LLM Analyzer INITIALIZED (enabled={_llm_enabled})")
+        learning_engine = get_learning_engine()
+        await learning_engine.start()
+        logger.info("✅ Learning Engine STARTED")
         # Background task: broadcast live aircraft to WebSocket clients
         _broadcast_task = asyncio.create_task(_broadcast_loop())
         logger.info("="*80)
@@ -96,7 +103,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    global sdr_manager, llm_analyzer, _tracking_task, _broadcast_task
+    global sdr_manager, llm_analyzer, learning_engine, _tracking_task, _broadcast_task
     logger.info("🛑 OPHIR 2.0 shutting down...")
     if _broadcast_task:
         _broadcast_task.cancel()
@@ -108,6 +115,8 @@ async def shutdown():
         await sdr_manager.stop_tracking()
     if llm_analyzer:
         await llm_analyzer.close()
+    if learning_engine:
+        await learning_engine.stop()
 
 
 async def _broadcast_loop():
@@ -117,6 +126,13 @@ async def _broadcast_loop():
         if not sdr_manager:
             continue
         aircraft_list = list(sdr_manager.aircraft_dict.values())
+
+        # Feed civilian aircraft (with GPS) into the learning engine
+        if learning_engine:
+            for ac in aircraft_list:
+                if ac.get("latitude") is not None and ac.get("longitude") is not None:
+                    learning_engine.record_civilian_observation(ac)
+
         payload = json.dumps({"aircraft": aircraft_list, "count": len(aircraft_list)})
         dead_aircraft_clients: list[WebSocket] = []
         for ws in _ws_aircraft_clients:
@@ -146,6 +162,10 @@ async def _broadcast_loop():
 
 @app.get("/")
 async def root():
+    """Serve dashboard if available, otherwise return API info."""
+    dashboard_path = Path(__file__).parent / "web" / "dashboard.html"
+    if dashboard_path.exists():
+        return FileResponse(str(dashboard_path), media_type="text/html")
     return {"name": "OPHIR 2.0 | AEGIS-X", "version": "2.0.0", "status": "operational"}
 
 @app.get("/health")
@@ -623,7 +643,118 @@ async def llm_status():
     }
 
 
+# ---------------------------------------------------------------------------
+# Distance calculation endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/distance")
+async def calculate_distance(body: dict):
+    """Estimate aircraft distance from RSSI or GPS coordinates.
+
+    Request body (all fields optional):
+        rssi_dbm    – received signal strength (dBm)
+        latitude    – aircraft latitude (decimal degrees)
+        longitude   – aircraft longitude (decimal degrees)
+    """
+    rssi = body.get("rssi_dbm")
+    lat = body.get("latitude")
+    lon = body.get("longitude")
+
+    result = estimate_distance(rssi, lat, lon)
+
+    # Enhance estimate with calibrated model if only RSSI available
+    if result["method"] == "rssi" and rssi is not None and learning_engine:
+        calibrated = learning_engine.calibrated_distance_km(float(rssi))
+        result["distance_km_calibrated"] = calibrated
+    else:
+        result["distance_km_calibrated"] = result.get("distance_km")
+
+    result["observer_lat"] = config.OBSERVER_LAT
+    result["observer_lon"] = config.OBSERVER_LON
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Learning engine endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/learning/stats")
+async def learning_stats():
+    """Return learning engine statistics (training sample count, calibration)."""
+    if not learning_engine:
+        return {"error": "Learning engine not initialized"}
+    return learning_engine.stats()
+
+
+@app.get("/api/v1/learning/samples")
+async def learning_samples(limit: int = 50):
+    """Return recent training samples collected from civilian aircraft."""
+    if not learning_engine:
+        return {"samples": [], "count": 0}
+    samples = learning_engine.recent_samples(limit=min(limit, 200))
+    return {"samples": samples, "count": len(samples)}
+
+
+# ---------------------------------------------------------------------------
+# Aircraft classification endpoint (per-aircraft LLM analysis)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/aircraft/{hex_code}/analysis")
+async def aircraft_analysis(hex_code: str):
+    """Return classification and LLM analysis for a specific aircraft."""
+    hex_code = hex_code.upper()
+    if not sdr_manager:
+        raise HTTPException(status_code=503, detail="SDR not initialised")
+
+    aircraft_data = sdr_manager.aircraft_dict.get(hex_code)
+    if not aircraft_data:
+        raise HTTPException(status_code=404, detail=f"Aircraft {hex_code} not in live data")
+
+    # Distance estimate
+    dist_info = estimate_distance(
+        aircraft_data.get("rssi"),
+        aircraft_data.get("latitude"),
+        aircraft_data.get("longitude"),
+    )
+    if dist_info["method"] == "rssi" and aircraft_data.get("rssi") is not None and learning_engine:
+        dist_info["distance_km_calibrated"] = learning_engine.calibrated_distance_km(
+            float(aircraft_data["rssi"])
+        )
+
+    # Classification
+    classification = (
+        classifier.classify(aircraft_data)
+        if classifier
+        else {"category": "UNKNOWN", "confidence": 0.0, "reason": "classifier not ready"}
+    )
+
+    # LLM analysis (non-blocking: skip if disabled or unavailable)
+    llm_result = "LLM analysis not requested"
+    if llm_analyzer and llm_analyzer.enabled:
+        anomaly_type = classification.get("category", "GENERAL")
+        try:
+            llm_result = await asyncio.wait_for(
+                llm_analyzer.analyze_anomaly(hex_code, anomaly_type, aircraft_data),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            llm_result = "LLM analysis timed out"
+        except Exception as exc:
+            llm_result = f"LLM error: {exc}"
+
+    return {
+        "hex_code": hex_code,
+        "aircraft": aircraft_data,
+        "classification": classification,
+        "distance": dist_info,
+        "llm_analysis": llm_result,
+        "observer": {"lat": config.OBSERVER_LAT, "lon": config.OBSERVER_LON},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 if __name__ == "__main__":
     logger.info("🚀 Starting OPHIR 2.0 Server")
+    logger.info(f"📡 Observer location: {config.OBSERVER_LAT}, {config.OBSERVER_LON}")
     logger.info("📡 Listening on http://0.0.0.0:8080")
     uvicorn.run(app, host="0.0.0.0", port=8080, workers=1, log_level="info")
