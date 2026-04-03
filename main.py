@@ -262,6 +262,7 @@ import asyncio
 import collections
 import json
 import logging
+import math
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -655,6 +656,16 @@ async def get_dashboard():
         raise HTTPException(status_code=404, detail="Dashboard not found")
 
 
+@app.get("/index.html")
+@app.get("/archive")
+async def get_index():
+    """Serve the main archive / dashboard HTML page."""
+    for candidate in ["web/index.html", "index.html"]:
+        if os.path.exists(candidate):
+            return FileResponse(candidate, media_type="text/html")
+    raise HTTPException(status_code=404, detail="index.html not found")
+
+
 # ---------------------------------------------------------------------------
 # v1 API endpoints
 # ---------------------------------------------------------------------------
@@ -879,6 +890,309 @@ async def aircraft_analysis(hex_code: str):
         "llm_analysis": llm_result,
         "observer": {"lat": config.OBSERVER_LAT, "lon": config.OBSERVER_LON},
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Aircraft Details API
+# ---------------------------------------------------------------------------
+
+# Observer location (Negev, Israel) used for azimuth/elevation calculations
+_OBSERVER_LAT = 31.073541
+_OBSERVER_LON = 35.037383
+_ADS_B_FREQ_MHZ = 1090.0
+# Typical ADS-B EIRP ≈ 250 W → ~54 dBm; 41 dBm gives reasonable range estimates
+_ADS_B_EIRP_DBM = 41.0
+_FEET_TO_METERS = 0.3048
+
+
+def _rssi_to_distance_km(rssi_dbm: float) -> float:
+    """Estimate distance in km from RSSI using the Friis free-space path loss model.
+
+    FSPL (dB) = 32.45 + 20·log10(f_MHz) + 20·log10(d_km)
+    RSSI = EIRP - FSPL  →  d_km = 10^((EIRP - RSSI - 32.45 - 20·log10(f)) / 20)
+    """
+    fspl = _ADS_B_EIRP_DBM - rssi_dbm
+    d_km = 10 ** ((fspl - 32.45 - 20 * math.log10(_ADS_B_FREQ_MHZ)) / 20)
+    return round(max(0.1, d_km), 2)
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return bearing from point 1 to point 2 in degrees (0–360)."""
+    lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
+    dlon_r = math.radians(lon2 - lon1)
+    x = math.sin(dlon_r) * math.cos(lat2_r)
+    y = math.cos(lat1_r) * math.sin(lat2_r) - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(dlon_r)
+    bearing = math.degrees(math.atan2(x, y))
+    return round((bearing + 360) % 360, 1)
+
+
+def _elevation_deg(distance_km: float, altitude_m: float) -> float:
+    """Estimate elevation angle in degrees given slant distance and aircraft altitude."""
+    if distance_km <= 0:
+        return 90.0
+    alt_km = altitude_m / 1000.0
+    return round(math.degrees(math.atan2(alt_km, distance_km)), 1)
+
+
+def _heading_to_cardinal(heading: float) -> str:
+    """Convert heading degrees to cardinal direction abbreviation."""
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    return dirs[round(heading / 45) % 8]
+
+
+def _build_aircraft_details(hex_code: str, live: dict, db_rec) -> dict:
+    """Assemble the full details response from live data and DB record."""
+    hex_upper = hex_code.upper()
+
+    # --- position ---
+    lat = live.get("latitude")
+    lon = live.get("longitude")
+    alt_ft = live.get("altitude")  # SBS altitude is in feet
+    alt_m = round(alt_ft * _FEET_TO_METERS) if alt_ft is not None else None
+    speed_kt = live.get("ground_speed")
+    speed_kmh = round(speed_kt * 1.852) if speed_kt is not None else None
+    heading = live.get("track")
+    rssi = live.get("rssi")
+    vertical_rate = live.get("vertical_rate")
+    callsign = (live.get("callsign") or "").strip() or None
+
+    # --- signal ---
+    distance_km = _rssi_to_distance_km(rssi) if rssi is not None else None
+    azimuth = None
+    elevation = None
+    if lat is not None and lon is not None:
+        azimuth = _bearing_deg(_OBSERVER_LAT, _OBSERVER_LON, lat, lon)
+    if distance_km is not None and alt_m is not None:
+        elevation = _elevation_deg(distance_km, alt_m)
+
+    # Signal quality heuristic (0–100)
+    signal_quality = None
+    if rssi is not None:
+        # Map [-100 dBm, -50 dBm] linearly to [0, 100]
+        signal_quality = max(0, min(100, int((rssi + 100) * 2)))
+
+    # --- DB record fields (may be None) ---
+    db_callsign = None
+    db_type = None
+    db_country = None
+    db_in_db = False
+    db_first_logged = None
+    db_suspicious = False
+    db_notes = None
+    db_first_seen = None
+    db_last_seen = None
+
+    if db_rec:
+        db_in_db = True
+        db_callsign = db_rec.callsign
+        db_type = db_rec.aircraft_type
+        db_country = db_rec.country
+        db_suspicious = bool(getattr(db_rec, "suspicious", False))
+        db_notes = getattr(db_rec, "user_notes", None)
+        db_first_seen = db_rec.first_seen.isoformat() if db_rec.first_seen else None
+        db_last_seen = db_rec.last_seen.isoformat() if db_rec.last_seen else None
+        db_first_logged = db_rec.first_seen.strftime("%Y-%m-%d") if db_rec.first_seen else None
+
+    effective_callsign = callsign or db_callsign
+    effective_type = db_type
+    effective_country = db_country
+
+    # --- basic classification heuristics ---
+    threat_level = "NONE"
+    aircraft_class = "Unknown"
+    if db_in_db:
+        aircraft_class = "Civilian Commercial"
+        threat_level = "NONE"
+    elif not effective_callsign:
+        aircraft_class = "Unknown"
+        threat_level = "UNKNOWN"
+    else:
+        aircraft_class = "Unregistered"
+        threat_level = "LOW"
+
+    gps_transmitting = lat is not None and lon is not None
+
+    return {
+        "icao_hex": hex_upper,
+        "callsign": effective_callsign,
+        "country": effective_country,
+        "registration": None,
+        "airline": None,
+
+        "aircraft": {
+            "type": effective_type,
+            "model": None,
+            "manufacturer": None,
+            "engines": None,
+            "engine_type": None,
+            "max_altitude": None,
+            "cruise_speed": None,
+        },
+
+        "position": {
+            "latitude": lat,
+            "longitude": lon,
+            "altitude_ft": alt_ft,
+            "altitude_m": alt_m,
+            "speed_kt": speed_kt,
+            "speed_kmh": speed_kmh,
+            "heading": heading,
+            "heading_cardinal": _heading_to_cardinal(heading) if heading is not None else None,
+            "vertical_rate": vertical_rate,
+            "timestamp": live.get("last_seen"),
+        },
+
+        "signal": {
+            "rssi_dbm": rssi,
+            "signal_quality": signal_quality,
+            "distance_km": distance_km,
+            "distance_method": "Friis Free Space Loss (1090 MHz)" if rssi is not None else None,
+            "observer_lat": _OBSERVER_LAT,
+            "observer_lon": _OBSERVER_LON,
+            "azimuth": azimuth,
+            "elevation": elevation,
+        },
+
+        "classification": {
+            "aircraft_class": aircraft_class,
+            "threat_level": threat_level,
+            "gps_transmitting": gps_transmitting,
+            "military_suspect": False,
+            "jammer_detected": False,
+            "spoofing_detected": False,
+        },
+
+        "tracking": {
+            "first_seen": db_first_seen or live.get("first_seen"),
+            "last_seen": db_last_seen or live.get("last_seen"),
+            "message_count": live.get("messages"),
+        },
+
+        "database": {
+            "in_database": db_in_db,
+            "first_logged": db_first_logged,
+            "suspicious": db_suspicious,
+            "user_notes": db_notes,
+        },
+    }
+
+
+@app.get("/api/v1/aircraft/{hex_code}/details")
+async def get_aircraft_details(hex_code: str):
+    """Return detailed information for a single aircraft by ICAO hex code.
+
+    Combines live tracking data with the database record.  A 404 is returned
+    only when the aircraft is neither in the live tracking dict nor in the DB.
+    """
+    hex_upper = hex_code.upper()
+
+    # Live data from SDR tracking loop
+    live: dict = {}
+    if sdr_manager:
+        live = sdr_manager.aircraft_dict.get(hex_upper, {})
+
+    # Database record
+    db_rec = None
+    try:
+        session = db_manager.get_sync_session()
+        try:
+            db_rec = db_manager.get_aircraft_by_hex(session, hex_upper)
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning(f"DB lookup failed for {hex_upper}: {e}")
+
+    if not live and db_rec is None:
+        raise HTTPException(status_code=404, detail=f"Aircraft {hex_upper} not found")
+
+    details = _build_aircraft_details(hex_upper, live, db_rec)
+
+    # Attempt LLM classification if available
+    if llm_analyzer and llm_analyzer.enabled and live:
+        try:
+            llm_text = await asyncio.wait_for(
+                llm_analyzer.analyze_anomaly(hex_upper, "DETAILS_REQUEST", live),
+                timeout=10.0,
+            )
+            details["llm_analysis"] = {"description": llm_text, "confidence": None}
+        except Exception:
+            details["llm_analysis"] = {"description": "LLM analysis unavailable.", "confidence": None}
+    else:
+        details["llm_analysis"] = {"description": None, "confidence": None}
+
+    return details
+
+
+@app.get("/api/v1/aircraft/{hex_code}/position")
+async def get_aircraft_position(hex_code: str):
+    """Return the latest position snapshot for a single aircraft (lightweight)."""
+    hex_upper = hex_code.upper()
+    if not sdr_manager:
+        raise HTTPException(status_code=503, detail="SDR manager not ready")
+    live = sdr_manager.aircraft_dict.get(hex_upper)
+    if not live:
+        raise HTTPException(status_code=404, detail=f"Aircraft {hex_upper} not tracked")
+    alt_ft = live.get("altitude")
+    speed_kt = live.get("ground_speed")
+    return {
+        "icao_hex": hex_upper,
+        "latitude": live.get("latitude"),
+        "longitude": live.get("longitude"),
+        "altitude_ft": alt_ft,
+        "altitude_m": round(alt_ft * _FEET_TO_METERS) if alt_ft is not None else None,
+        "speed_kt": speed_kt,
+        "speed_kmh": round(speed_kt * 1.852) if speed_kt is not None else None,
+        "heading": live.get("track"),
+        "rssi_dbm": live.get("rssi"),
+        "timestamp": live.get("last_seen"),
+    }
+
+
+@app.post("/api/v1/aircraft/unknown/add")
+async def add_unknown_aircraft(body: dict):
+    """Add an unknown aircraft to the database.
+
+    Request body:
+        icao_hex        (required) – 6-character ICAO hex code
+        aircraft_type   – e.g. "Boeing 737-800"
+        callsign        – e.g. "SU123"
+        country         – ISO-3 or full country name
+        aircraft_class  – "Civilian Commercial", "Military", "UAV/Drone", etc.
+        description     – free-text description
+        user_notes      – operator notes
+    """
+    hex_code = (body.get("icao_hex") or "").strip().upper()
+    if not hex_code:
+        raise HTTPException(status_code=400, detail="icao_hex is required")
+    if not (len(hex_code) == 6 and all(c in "0123456789ABCDEF" for c in hex_code)):
+        raise HTTPException(status_code=400, detail="icao_hex must be exactly 6 hexadecimal characters")
+
+    aircraft_data = {
+        "hex_code": hex_code,
+        "callsign": (body.get("callsign") or "").strip() or None,
+        "aircraft_type": body.get("aircraft_type"),
+        "country": body.get("country"),
+    }
+
+    try:
+        session = db_manager.get_sync_session()
+        try:
+            ok = db_manager.add_aircraft(session, aircraft_data)
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error(f"Failed to add unknown aircraft {hex_code}: {e}")
+        raise HTTPException(status_code=500, detail="Database error")
+
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save aircraft to database")
+
+    logger.info(f"✅ Unknown aircraft {hex_code} added to database")
+    return {
+        "success": True,
+        "message": "Aircraft added to database",
+        "hex_code": hex_code,
     }
 
 
