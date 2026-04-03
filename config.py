@@ -99,6 +99,16 @@ ANTENNA_PROFILES: dict = {
 
 DEFAULT_ANTENNA_MODE: AntennaMode = AntennaMode.AIR
 
+# Gain control defaults
+SDR_GAIN_MIN = -5
+SDR_GAIN_MAX = 45
+SDR_GAIN_DEFAULT = 45
+
+# Noise threshold defaults
+NOISE_THRESHOLD_DEFAULT = -75
+NOISE_THRESHOLD_MIN = -100
+NOISE_THRESHOLD_MAX = -30
+
 # LLM settings
 ENABLE_LLM_ANALYSIS = True
 OLLAMA_BASE_URL = "http://localhost:11434"
