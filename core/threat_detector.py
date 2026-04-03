@@ -5,29 +5,25 @@ Detects anomalies in RF / ADS-B signal streams.
 
 import logging
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-_detector_instance = None
-
 
 class ThreatDetector:
-    """Simple threshold-based anomaly detector."""
+    """Detect threats from aircraft and RF signal patterns."""
 
-    NOISE_ANOMALY_THRESHOLD = -20.0  # dBm – unusually strong signal
+    def __init__(self):
+        self.noise_history: deque = deque(maxlen=1000)
+        self.threat_log: list = []
 
-    def __init__(self, history_len: int = 10000):
-        self.noise_history: deque = deque(maxlen=history_len)
-        logger.info("✅ Threat Detector INITIALIZED")
-
-    def record(self, noise_dbm: float, signal_type: str = "UNKNOWN"):
-        """Add a new data point to the history."""
+    def update(self, noise_dbm: float, aircraft_count: int = 0):
+        """Record a new data point."""
         self.noise_history.append(
             {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "time": datetime.utcnow().isoformat(),
                 "noise_dbm": noise_dbm,
-                "signal_type": signal_type,
+                "aircraft_count": aircraft_count,
             }
         )
 
