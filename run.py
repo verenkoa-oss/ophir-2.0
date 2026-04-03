@@ -111,7 +111,10 @@ def _try_start_dump1090() -> bool:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
 
-    # Try direct binary in BASIC (raw) mode
+    # Try direct binary in BASIC (raw) mode:
+    #   --raw   output raw ADS-B message hex strings on port 30001
+    #   --net   enable network output ports (30001 SBS, 30003 AVR, etc.)
+    #   --quiet suppress verbose output to stdout
     for binary in ("dump1090", "dump1090-fa", "dump1090-mutability"):
         try:
             proc = subprocess.Popen(

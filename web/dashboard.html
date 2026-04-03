@@ -219,7 +219,7 @@
   </div>
   <div id="llm-panel">
     <div id="llm-title">🤖 LLM Analysis</div>
-    <div id="llm-text">Initialising…</div>
+    <div id="llm-text">Initializing…</div>
   </div>
 </div>
 
@@ -405,10 +405,13 @@ function updateAircraftList(aircraft) {
 }
 
 function rssiToDist(rssi) {
-  // Client-side Friis approximation (same formula as server)
-  const c = 299792458, f = 1090e6, lam = c / f;
-  const fspl_db = 18 + 0 + 3 - rssi;
-  const d_m = (lam / (4 * Math.PI)) * Math.pow(10, fspl_db / 20);
+  // Client-side Friis approximation (mirrors server core/distance_calculator.py)
+  // ADS-B 1090 MHz constants (must match config.py)
+  const TX_POWER_DBM = 18, TX_GAIN_DBI = 0, RX_GAIN_DBI = 3;
+  const c = 299792458, FREQ_HZ = 1090e6;
+  const wavelength_m = c / FREQ_HZ;
+  const fspl_db = TX_POWER_DBM + TX_GAIN_DBI + RX_GAIN_DBI - rssi;
+  const d_m = (wavelength_m / (4 * Math.PI)) * Math.pow(10, fspl_db / 20);
   return Math.max(0.1, Math.min(400, d_m / 1000)).toFixed(1);
 }
 

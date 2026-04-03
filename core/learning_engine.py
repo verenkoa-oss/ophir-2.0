@@ -26,6 +26,10 @@ _DB_PATH = Path(__file__).parent.parent / "db" / "signal_training.db"
 
 # Minimum number of calibration samples before the custom model is used
 _MIN_SAMPLES_FOR_MODEL = 10
+# Background recalibration interval (seconds)
+_RECALIBRATION_INTERVAL_SECONDS = 300
+# Maximum number of recent samples used when computing the calibration offset
+_MAX_CALIBRATION_SAMPLES = 500
 
 
 def _db_connect() -> sqlite3.Connection:
@@ -213,7 +217,7 @@ class LearningEngine:
     async def _recalibration_loop(self) -> None:
         """Periodically recalculate the calibration offset."""
         while self._running:
-            await asyncio.sleep(300)  # every 5 minutes
+            await asyncio.sleep(_RECALIBRATION_INTERVAL_SECONDS)
             try:
                 if self._sample_count >= _MIN_SAMPLES_FOR_MODEL:
                     self._recalculate_offset()
@@ -226,7 +230,8 @@ class LearningEngine:
             return
         try:
             rows = self._conn.execute(
-                "SELECT rssi_dbm, distance_km FROM training_samples ORDER BY id DESC LIMIT 500"
+                "SELECT rssi_dbm, distance_km FROM training_samples ORDER BY id DESC LIMIT ?",
+                (_MAX_CALIBRATION_SAMPLES,),
             ).fetchall()
             if not rows:
                 return

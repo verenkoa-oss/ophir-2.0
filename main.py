@@ -704,7 +704,7 @@ async def aircraft_analysis(hex_code: str):
     """Return classification and LLM analysis for a specific aircraft."""
     hex_code = hex_code.upper()
     if not sdr_manager:
-        raise HTTPException(status_code=503, detail="SDR not initialised")
+        raise HTTPException(status_code=503, detail="SDR not initialized")
 
     aircraft_data = sdr_manager.aircraft_dict.get(hex_code)
     if not aircraft_data:
@@ -740,7 +740,8 @@ async def aircraft_analysis(hex_code: str):
         except asyncio.TimeoutError:
             llm_result = "LLM analysis timed out"
         except Exception as exc:
-            llm_result = f"LLM error: {exc}"
+            logger.error(f"LLM analysis error for {hex_code}: {exc}")
+            llm_result = "LLM analysis error"
 
     return {
         "hex_code": hex_code,
