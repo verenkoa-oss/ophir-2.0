@@ -35,7 +35,7 @@ https://github.com/settings/tokens/new
 | Field | Value |
 |-------|-------|
 | **Note** | `ophir-push-2026` |
-| **Expiration** | 90 days |
+| **Expiration** | 90 days (classic PAT supports up to 1 year; 90 days is a good balance) |
 | **`repo`** | ✅ (all sub-scopes included) |
 | **`workflow`** | ✅ |
 | **`read:org`** | ✅ (under `admin:org`) |
@@ -210,7 +210,10 @@ Once the branch is pushed without conflicts:
 → When creating the PAT, expand **"admin:org"** and check **`read:org`** specifically.
 
 ### "You've used all of this month's Premium"
-→ This message refers to **GitHub Copilot** usage, not git push.  
+→ This message refers to **GitHub Copilot** monthly request usage (AI completions / Copilot Chat),
+   not git push operations or repository access.  
+   In this case the message appeared inside a Copilot Chat session, which counted against the
+   monthly Copilot quota — not against any git or repository permission.  
    Git push is **free** and works regardless of Copilot limits.  
    Merging a PR via the web UI (section 6) is also **always free**.
 
