@@ -357,6 +357,14 @@ async def startup():
     logger.info("🚀 OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR | STARTING...")
     try:
         sdr_manager = SDRReader()
+
+        # Connect to dump1090 and start _continuous_read() background task
+        connected = await sdr_manager.connect()
+        if not connected:
+            logger.error("❌ Failed to connect to dump1090 - check that dump1090 --net is running")
+        else:
+            logger.info("✅ Connected to dump1090 - REAL DATA MODE (PORT 30001)")
+
         # Apply the default antenna mode from config
         sdr_manager.set_antenna_mode(_antenna_mode)
         _tracking_task = asyncio.create_task(sdr_manager.start_tracking())
@@ -382,6 +390,16 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    global sdr_manager
+    logger.info("🛑 OPHIR 2.0 shutting down...")
+    if sdr_manager:
+        await sdr_manager.close()
+
+@app.get("/")
+async def root():
+    for path in ("web/dashboard.html", "dashboard.html"):
+        if os.path.exists(path):
+            return FileResponse(path, media_type="text/html")
     global sdr_manager, llm_analyzer, _tracking_task, _broadcast_task, _osc_task
     logger.info("🛑 OPHIR 2.0 shutting down...")
     for task in (_broadcast_task, _osc_task):
@@ -510,7 +528,11 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "sdr_connected": sdr_manager is not None, "detector_loaded": detector is not None}
+    return {
+        "status": "healthy",
+        "sdr_connected": sdr_manager is not None and getattr(sdr_manager, "connected", False),
+        "detector_loaded": detector is not None,
+    }
 
 @app.get("/aircraft")
 async def get_aircraft():
@@ -528,11 +550,29 @@ async def get_noise():
         return {
             "current_signal_type": noise_data.get('signal_type', 'UNKNOWN'),
             "signal_confidence": noise_data.get('confidence', 0),
-            "noise_dbm": noise_data.get('noise_dbm', 0)
+            "noise_dbm": noise_data.get('noise_dbm', -95.0),
+            "adsb_dbm": noise_data.get('adsb_dbm', -95.0),
+            "noise_history": noise_data.get('noise_history', []),
+            "adsb_history": noise_data.get('adsb_history', []),
         }
     except Exception as e:
         logger.error(f"Noise error: {e}")
         return {"current_signal_type": "ERROR", "error": str(e)}
+
+@app.get("/raw")
+async def get_raw():
+    """Return recent raw dump1090 messages for terminal display"""
+    if not sdr_manager:
+        return {"messages": [], "connected": False}
+    try:
+        noise_data = await sdr_manager.get_noise_data()
+        return {
+            "messages": noise_data.get('raw_messages', []),
+            "connected": getattr(sdr_manager, 'connected', False),
+        }
+    except Exception as e:
+        logger.error(f"Raw error: {e}")
+        return {"messages": [], "connected": False}
 
 @app.get("/events")
 async def get_events():
