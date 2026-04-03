@@ -96,9 +96,11 @@ _ws_osc_clients: list[WebSocket] = []
 
 # Gain control (-5 … +40 dB, stored at runtime)
 _current_gain: float = float(config.SDR_GAIN)
+_runtime_gain_db: float = float(config.SDR_GAIN_DEFAULT)
 
 # Noise threshold / filter settings
-_noise_threshold_dbm: float = -75.0
+_noise_threshold_dbm: float = float(config.NOISE_THRESHOLD_DEFAULT)
+_runtime_noise_threshold_dbm: float = float(config.NOISE_THRESHOLD_DEFAULT)
 _noise_filter_enabled: bool = True
 _noise_alert_enabled: bool = True
 _noise_show_events: bool = True
@@ -110,24 +112,25 @@ _signals_processed: int = 0
 
 
 def _get_dump1090_pid() -> int | None:
-    """Return the PID of a running dump1090 process, or None if not found."""
-    try:
-        result = subprocess.run(
-            ["pgrep", "-x", "dump1090-fa"],
-            capture_output=True, text=True, timeout=2
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip().split()[0])
-        # Also try the plain dump1090 binary name
-        result = subprocess.run(
-            ["pgrep", "-x", "dump1090"],
-            capture_output=True, text=True, timeout=2
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip().split()[0])
-    except Exception:
-        pass
+    """Return the PID of a running dump1090-basic (mutability) process, or None."""
+    for binary in ("dump1090", "dump1090-mutability"):
+        try:
+            result = subprocess.run(
+                ["pgrep", "-x", binary],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return int(result.stdout.strip().split()[0])
+        except Exception:
+            pass
     return None
+
+
+def _dump1090_uptime() -> float | None:
+    """Return seconds since dump1090 was last confirmed running, or None."""
+    if _dump1090_start_monotonic is None:
+        return None
+    return time.monotonic() - _dump1090_start_monotonic
 
 @app.on_event("startup")
 async def startup():
@@ -1141,6 +1144,125 @@ async def aircraft_distance(hex_code: str):
     if not ac:
         raise HTTPException(status_code=404, detail=f"Aircraft {hex_code} not found")
     return estimate_aircraft_distance(ac)
+
+
+# ---------------------------------------------------------------------------
+# dump1090 Management  (basic / mutability – NOT dump1090-fa)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/dump1090/status")
+async def dump1090_status_endpoint():
+    """Return running status of the dump1090-basic process."""
+    pid = _get_dump1090_pid()
+    uptime_s = _dump1090_uptime()
+    return {
+        "dump1090_status": "running" if pid else "stopped",
+        "pid": pid,
+        "uptime_seconds": uptime_s,
+    }
+
+
+@app.post("/api/v1/dump1090/start")
+async def dump1090_start():
+    """Start dump1090 basic (--net) if it is not already running."""
+    global _dump1090_start_monotonic
+    if _get_dump1090_pid():
+        return {"success": False, "message": "dump1090 is already running"}
+    try:
+        subprocess.Popen(
+            ["dump1090", "--net", "--quiet"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        await asyncio.sleep(1.2)
+        pid = _get_dump1090_pid()
+        if pid:
+            _dump1090_start_monotonic = time.monotonic()
+            logger.info(f"✅ dump1090 started (PID {pid})")
+            return {"success": True, "pid": pid}
+        return {"success": False, "message": "dump1090 did not start – check binary path"}
+    except FileNotFoundError:
+        return {"success": False, "message": "dump1090 binary not found in PATH"}
+    except Exception as e:
+        logger.error(f"dump1090 start error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/v1/dump1090/stop")
+async def dump1090_stop():
+    """Send SIGTERM to the running dump1090 process."""
+    global _dump1090_start_monotonic
+    pid = _get_dump1090_pid()
+    if not pid:
+        return {"success": False, "message": "dump1090 is not running"}
+    try:
+        import signal as _signal
+        os.kill(pid, _signal.SIGTERM)
+        _dump1090_start_monotonic = None
+        logger.info(f"🛑 dump1090 stopped (PID {pid})")
+        return {"success": True, "stopped_pid": pid}
+    except Exception as e:
+        logger.error(f"dump1090 stop error: {e}")
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/v1/dump1090/restart")
+async def dump1090_restart():
+    """Stop then start dump1090 basic."""
+    stop_result = await dump1090_stop()
+    await asyncio.sleep(_DUMP1090_RESTART_DELAY)
+    start_result = await dump1090_start()
+    return {"stop": stop_result, "start": start_result}
+
+
+# ---------------------------------------------------------------------------
+# LLM Control
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/llm/status")
+async def llm_status_endpoint():
+    """Return LLM enabled state and Ollama connectivity."""
+    if not llm_analyzer:
+        return {"llm_enabled": False, "ollama_connected": False, "model": None}
+    # Lightweight connectivity check only when LLM is enabled
+    connected = llm_analyzer.ollama_connected
+    if llm_analyzer.enabled:
+        connected = await llm_analyzer.check_connection()
+    return {
+        "llm_enabled": llm_analyzer.enabled,
+        "ollama_connected": connected,
+        "model": config.OLLAMA_MODEL,
+    }
+
+
+@app.post("/api/v1/llm/toggle")
+async def llm_toggle():
+    """Toggle LLM analysis on/off at runtime."""
+    global _llm_enabled
+    if not llm_analyzer:
+        raise HTTPException(status_code=503, detail="LLM not initialized")
+    _llm_enabled = not llm_analyzer.enabled
+    llm_analyzer.set_enabled(_llm_enabled)
+    logger.info(f"🤖 LLM toggled → {'enabled' if _llm_enabled else 'disabled'}")
+    return {"llm_enabled": _llm_enabled}
+
+
+# ---------------------------------------------------------------------------
+# Antenna Mode Control
+# ---------------------------------------------------------------------------
+
+class _AntennaModeBody(BaseModel):
+    mode: config.AntennaMode
+
+
+@app.put("/api/v1/antenna/mode")
+async def set_antenna_mode(body: _AntennaModeBody):
+    """Switch antenna profile between GARAGE and AIR."""
+    global _antenna_mode
+    _antenna_mode = body.mode
+    if sdr_manager:
+        sdr_manager.set_antenna_mode(body.mode)
+    logger.info(f"📡 Antenna mode → {body.mode}")
+    return {"antenna_mode": body.mode, "success": True}
 
 
 if __name__ == "__main__":
