@@ -65,15 +65,24 @@
 - [x] README.md
 - [x] DEPLOYMENT.md
 
-## 🎯 System Readiness: ~90% READY
+## ✅ Project Files
+- [x] .gitignore — updated to exclude all *.db files
+- [x] LICENSE — MIT license added
+- [x] README.md — includes setup and run instructions
+- [x] DEPLOYMENT.md — full deployment guide
+- [x] SYSTEM_DIAGNOSTICS.md — full system test and readiness report
 
-### Ready for demonstration:
+## 🎯 System Readiness: ✅ READY
+
+### Ready for use:
 - All core modules implemented
 - Full dashboard with all controls
 - Real-time WebSocket streaming
 - LLM analysis (requires Ollama running)
 - Distance calculation from RSSI (Friis formula)
 - Learning engine for civilian baseline
+- MIT license added
+- .gitignore correctly excludes *.db files
 
 ### Prerequisites to deploy:
 - Raspberry Pi / Linux machine with RTL-SDR dongle
@@ -81,6 +90,11 @@
 - `ollama` running with `mistral:latest` model
 - `pip install -r requirements.txt`
 - Run: `python3 run.py`
+
+### Account notes:
+- GitHub Free plan — push/merge unrestricted
+- Copilot Pro trial expires 30 April 2026 (then $10/month)
+- GitHub Actions not configured — not needed for solo developer
 
 ---
 Version: 2.0.0

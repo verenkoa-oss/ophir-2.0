@@ -12,7 +12,8 @@ build/
 .env.local
 *.log
 logs/
-data/ophir_db/*.db
+*.db
+data/ophir_db/
 data/ophir_cache/*
 data/ophir_archive/*
 .vscode/
@@ -22,5 +23,3 @@ data/ophir_archive/*
 *~
 .pytest_cache/
 htmlcov/
-db/signal_training.db
-db/records.db
