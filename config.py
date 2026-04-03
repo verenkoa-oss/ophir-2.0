@@ -44,10 +44,33 @@ SHADOW_RSSI_THRESHOLD = -90
 SHADOW_DISTANCE_MODEL = "friis"
 SHADOW_MAX_HISTORY = 10000
 
+# Antenna profiles
+class AntennaMode(str, Enum):
+    GARAGE = "GARAGE"
+    AIR = "AIR"
+
+ANTENNA_PROFILES: dict = {
+    AntennaMode.GARAGE: {
+        "rssi_threshold": -75,
+        "gain": 35,
+        "description": "Indoor/garage antenna – reduced range, higher noise floor",
+    },
+    AntennaMode.AIR: {
+        "rssi_threshold": -90,
+        "gain": 45,
+        "description": "Outdoor/airborne antenna – maximum range, low noise floor",
+    },
+}
+
+DEFAULT_ANTENNA_MODE: AntennaMode = AntennaMode.AIR
+
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "mistral:latest"
 OLLAMA_TIMEOUT = 60.0
 LLM_REPORT_SCHEDULE = "00:00"
+
+# LLM runtime defaults
+LLM_ENABLED_DEFAULT = True
 
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
