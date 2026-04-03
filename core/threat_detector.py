@@ -1,204 +1,176 @@
 """
 OPHIR Threat Detector Module
-Anomaly detection engine for ADS-B / Mode-S aircraft tracks.
-
-Detects:
-  - Unusual speed changes (rapid acceleration / deceleration)
-  - Sudden altitude jumps
-  - Ghost / shadow aircraft (no GPS position, very weak RSSI)
-  - Transponder spoofing indicators (ICAO hex reuse)
-
-Exposes: get_detector() factory returning a ThreatDetector instance
-with a detect_anomaly() method.
+Detects anomalies and potential threats in ADS-B data.
+The current implementation uses simple rule-based heuristics.
+Replace or extend ThreatDetector with more sophisticated AI/ML logic as needed.
 """
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from collections import deque
-
-import config
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Detection thresholds
-# ---------------------------------------------------------------------------
-_MAX_SPEED_DELTA_KT = 150        # knots per update – above = anomaly
-_MAX_ALTITUDE_DELTA_FT = 5000   # feet per update – above = anomaly
-_SHADOW_RSSI = config.SHADOW_RSSI_THRESHOLD   # dBm
-_MAX_HISTORY = config.SHADOW_MAX_HISTORY
+# Anomaly thresholds
+_RSSI_SPIKE_THRESHOLD = 20.0      # dBm jump that triggers a spike alert
+_ALTITUDE_DROP_THRESHOLD = 5000   # ft/update that triggers a rapid descent alert
+_SPEED_CHANGE_THRESHOLD = 150     # kt/update that triggers an unusual speed change
+_NOISE_HISTORY_MAXLEN = 500       # max entries kept in noise_history
 
 
 class ThreatDetector:
     """
-    Stateful anomaly / threat detection engine.
+    Rule-based anomaly / threat detector.
 
-    Attributes
-    ----------
-    noise_history : deque
-        Rolling window of signal observations (used by main.py /threat/history).
+    Maintains a rolling history of per-aircraft measurements and raises
+    alerts when configurable thresholds are exceeded.
 
-    Methods
-    -------
-    update(aircraft_data)
-        Feed new aircraft data into the detector; returns an anomaly dict or None.
+    noise_history : deque[dict]
+        Ring-buffer of recent measurement snapshots — exposed so that
+        GET /threat/history in main.py can iterate over it.
+
     detect_anomaly() -> dict | None
-        Inspect the most recently seen aircraft data and return an anomaly
-        description if one is found, or None otherwise.
-    get_summary() -> dict
-        Return aggregate anomaly statistics.
+        Returns a description of the *most recent* anomaly found across
+        all tracked aircraft, or None if everything looks normal.
     """
 
     def __init__(self):
-        # Track previous state per hex_code
-        self._prev: dict[str, dict] = {}
-        # Circular history buffer (raw signal snapshots)
-        self.noise_history: deque = deque(maxlen=_MAX_HISTORY)
-        # Shadow aircraft set (hex codes with no position)
-        self._shadow_aircraft: set[str] = set()
-        # All detected anomalies buffer
-        self._anomalies: deque = deque(maxlen=500)
-        # Most recent aircraft snapshot (for detect_anomaly() polling)
-        self._last_aircraft: dict | None = None
-        logger.info("✅ ThreatDetector initialised")
+        # Rolling history of signal / aircraft snapshots (newest last)
+        self.noise_history: deque = deque(maxlen=_NOISE_HISTORY_MAXLEN)
+
+        # Per-aircraft state for delta-based anomaly detection
+        self._prev_state: dict = {}   # hex_code -> {altitude, ground_speed, rssi}
+
+        # Accumulated anomaly log (last 100)
+        self._anomalies: deque = deque(maxlen=100)
+
+        logger.info("ThreatDetector initialised")
 
     # ------------------------------------------------------------------
-    # Public API
+    # Public API used by main.py
     # ------------------------------------------------------------------
 
-    def update(self, aircraft_data: dict) -> dict | None:
+    def update(self, aircraft_data: dict):
         """
-        Process a new aircraft observation.
+        Feed a new aircraft snapshot to the detector.
+        Call this whenever the SDR reader updates an aircraft entry.
 
         Parameters
         ----------
         aircraft_data : dict
-            Parsed aircraft data dict (hex_code, altitude, ground_speed,
-            rssi, latitude, longitude, …).
-
-        Returns
-        -------
-        anomaly dict if an anomaly was detected, else None.
+            Should contain at least: hex_code, altitude, ground_speed, rssi.
         """
-        if not aircraft_data or not aircraft_data.get("hex_code"):
-            return None
+        hex_code = aircraft_data.get("hex_code")
+        if not hex_code:
+            return
 
-        hex_code = aircraft_data["hex_code"]
-        self._last_aircraft = aircraft_data
-
-        # Record in noise_history
         snapshot = {
             "hex_code": hex_code,
-            "rssi": aircraft_data.get("rssi"),
+            "callsign": aircraft_data.get("callsign"),
             "altitude": aircraft_data.get("altitude"),
-            "speed": aircraft_data.get("ground_speed"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "ground_speed": aircraft_data.get("ground_speed"),
+            "rssi": aircraft_data.get("rssi"),
+            "timestamp": datetime.utcnow().isoformat(),
         }
         self.noise_history.append(snapshot)
 
-        # Shadow aircraft check
-        has_position = (
-            aircraft_data.get("latitude") is not None
-            and aircraft_data.get("longitude") is not None
-        )
-        rssi = aircraft_data.get("rssi")
-
-        if not has_position and (rssi is None or rssi < _SHADOW_RSSI):
-            self._shadow_aircraft.add(hex_code)
-            anomaly = self._make_anomaly(
-                hex_code, "SHADOW_AIRCRAFT",
-                f"No GPS position and RSSI {rssi} dBm below threshold {_SHADOW_RSSI} dBm",
-                aircraft_data,
-            )
-            self._anomalies.append(anomaly)
-            return anomaly
-
-        # Compare with previous state
-        prev = self._prev.get(hex_code)
-        if prev:
-            anomaly = self._check_deltas(hex_code, prev, aircraft_data)
+        # Delta-based anomaly checks
+        if hex_code in self._prev_state:
+            anomaly = self._check_deltas(hex_code, snapshot, self._prev_state[hex_code])
             if anomaly:
                 self._anomalies.append(anomaly)
-                self._prev[hex_code] = aircraft_data
-                return anomaly
 
-        self._prev[hex_code] = aircraft_data
-        return None
+        self._prev_state[hex_code] = snapshot
 
     def detect_anomaly(self) -> dict | None:
         """
-        Inspect the most recently seen aircraft and return an anomaly if found.
-        This is the polling interface used by main.py /threat/anomalies.
+        Return the most recently detected anomaly, or None.
+        Also performs a fresh pass over current noise_history to catch
+        absolute-value threshold violations.
         """
-        if not self._last_aircraft:
-            return None
-        return self.update(self._last_aircraft)
+        # Return most recent accumulated anomaly first
+        if self._anomalies:
+            return dict(self._anomalies[-1])
 
-    def get_shadow_aircraft(self) -> list:
-        """Return list of shadow aircraft hex codes."""
-        return list(self._shadow_aircraft)
+        # Scan the most recent snapshot per aircraft for absolute thresholds
+        for snapshot in reversed(list(self.noise_history)):
+            anomaly = self._check_absolute(snapshot)
+            if anomaly:
+                return anomaly
 
-    def get_recent_anomalies(self, n: int = 50) -> list:
-        """Return the n most recent anomalies."""
-        return list(self._anomalies)[-n:]
+        return None
 
-    def get_summary(self) -> dict:
-        """Return aggregate statistics."""
-        return {
-            "total_anomalies": len(self._anomalies),
-            "shadow_aircraft": len(self._shadow_aircraft),
-            "tracked_aircraft": len(self._prev),
-            "history_size": len(self.noise_history),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+    def get_all_anomalies(self) -> list:
+        """Return all accumulated anomalies (newest last)."""
+        return list(self._anomalies)
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Internal helpers
     # ------------------------------------------------------------------
 
-    def _check_deltas(
-        self, hex_code: str, prev: dict, curr: dict
-    ) -> dict | None:
-        """Compare consecutive observations for sudden changes."""
-        # Speed delta
-        prev_speed = prev.get("ground_speed")
-        curr_speed = curr.get("ground_speed")
-        if (
-            prev_speed is not None
-            and curr_speed is not None
-            and abs(curr_speed - prev_speed) > _MAX_SPEED_DELTA_KT
-        ):
+    def _check_deltas(self, hex_code: str, current: dict, previous: dict) -> dict | None:
+        """Detect rapid changes between two consecutive snapshots."""
+        alt_cur = current.get("altitude")
+        alt_prev = previous.get("altitude")
+        spd_cur = current.get("ground_speed")
+        spd_prev = previous.get("ground_speed")
+        rssi_cur = current.get("rssi")
+        rssi_prev = previous.get("rssi")
+
+        # Rapid altitude drop
+        if alt_cur is not None and alt_prev is not None:
+            if (alt_prev - alt_cur) > _ALTITUDE_DROP_THRESHOLD:
+                return self._make_anomaly(
+                    hex_code,
+                    "RAPID_DESCENT",
+                    f"Altitude dropped {alt_prev - alt_cur:.0f} ft in one update "
+                    f"({alt_prev:.0f} → {alt_cur:.0f} ft)",
+                )
+
+        # Unusual speed change
+        if spd_cur is not None and spd_prev is not None:
+            if abs(spd_cur - spd_prev) > _SPEED_CHANGE_THRESHOLD:
+                return self._make_anomaly(
+                    hex_code,
+                    "UNUSUAL_SPEED_CHANGE",
+                    f"Speed changed by {abs(spd_cur - spd_prev):.0f} kt "
+                    f"({spd_prev:.0f} → {spd_cur:.0f} kt)",
+                )
+
+        # RSSI spike (possible spoofing / interference)
+        if rssi_cur is not None and rssi_prev is not None:
+            if abs(rssi_cur - rssi_prev) > _RSSI_SPIKE_THRESHOLD:
+                return self._make_anomaly(
+                    hex_code,
+                    "RSSI_SPIKE",
+                    f"RSSI jumped by {abs(rssi_cur - rssi_prev):.1f} dBm "
+                    f"({rssi_prev:.1f} → {rssi_cur:.1f} dBm)",
+                )
+
+        return None
+
+    def _check_absolute(self, snapshot: dict) -> dict | None:
+        """Flag snapshots that exceed absolute (non-delta) thresholds."""
+        altitude = snapshot.get("altitude")
+        ground_speed = snapshot.get("ground_speed")
+        hex_code = snapshot.get("hex_code", "UNKNOWN")
+
+        if altitude is not None and altitude < 0:
             return self._make_anomaly(
-                hex_code, "UNUSUAL_SPEED_CHANGE",
-                f"Speed changed from {prev_speed:.0f} kt to {curr_speed:.0f} kt "
-                f"(delta {abs(curr_speed - prev_speed):.0f} kt)",
-                curr,
+                hex_code, "NEGATIVE_ALTITUDE",
+                f"Aircraft reporting negative altitude: {altitude} ft"
             )
 
-        # Altitude delta
-        prev_alt = prev.get("altitude")
-        curr_alt = curr.get("altitude")
-        if (
-            prev_alt is not None
-            and curr_alt is not None
-            and abs(curr_alt - prev_alt) > _MAX_ALTITUDE_DELTA_FT
-        ):
+        if ground_speed is not None and ground_speed > 700:
             return self._make_anomaly(
-                hex_code, "ALTITUDE_JUMP",
-                f"Altitude jumped from {prev_alt:.0f} ft to {curr_alt:.0f} ft "
-                f"(delta {abs(curr_alt - prev_alt):.0f} ft)",
-                curr,
+                hex_code, "EXTREME_SPEED",
+                f"Aircraft reporting extreme speed: {ground_speed} kt"
             )
 
         return None
 
-    def _make_anomaly(
-        self, hex_code: str, anomaly_type: str, description: str, data: dict
-    ) -> dict:
+    @staticmethod
+    def _make_anomaly(hex_code: str, anomaly_type: str, description: str) -> dict:
         return {
             "hex_code": hex_code,
             "anomaly_type": anomaly_type,

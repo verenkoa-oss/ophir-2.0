@@ -177,7 +177,6 @@ class LLMAnalyzer:
             return "Analysis timeout"
         except Exception as e:
             logger.error(f"LLM analysis error: {e}")
-            self.ollama_connected = False
             return "Analysis error"
     
     def _build_prompt(self, hex_code: str, anomaly_type: str, aircraft_data: dict) -> str:

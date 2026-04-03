@@ -1,56 +1,123 @@
 """
 OPHIR Signal Classifier Module
-Classifies RF signals detected via SDR.
+Classifies ADS-B signals and aircraft behaviour patterns.
+The current implementation is a rule-based stub; replace or extend the
+SignalClassifier.classify() method with an ML model as the project matures.
 """
 
 import logging
-import os
-from pathlib import Path
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-_classifier_instance = None
-
 
 class SignalClassifier:
-    """Lightweight signal classifier backed by a pre-trained model (if available)."""
+    """
+    Rule-based signal / aircraft classifier.
 
-    def __init__(self):
-        self.model = None
-        self._load_model()
+    classify(aircraft_data) returns a dict with:
+        - category   : str  (e.g. 'MILITARY', 'COMMERCIAL', 'GENERAL_AVIATION', 'UNKNOWN')
+        - confidence : float  0.0 – 1.0
+        - flags      : list[str]  (any special observations)
+    """
 
-    def _load_model(self):
-        """Load a trained model from disk if one exists."""
-        model_path = Path(__file__).parent.parent / "data" / "signal_model.pkl"
-        if model_path.exists():
-            try:
-                import pickle  # noqa: S403 – loading trusted internal model
-                with open(model_path, "rb") as f:
-                    self.model = pickle.load(f)  # noqa: S301
-                logger.info("✅ Loaded trained model (AI classifier)")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not load model: {e}. Using fallback.")
-        else:
-            logger.info("ℹ️ No trained model found – using fallback classifier")
+    # Known military hex-code prefixes (ICAO blocks allocated to military)
+    _MILITARY_PREFIXES = (
+        "AE",   # US military (DoD)
+        "A9",   # various US government
+    )
 
-    def classify(self, features: dict) -> dict:
-        """Classify a signal given a feature dictionary."""
-        if self.model is not None:
-            try:
-                signal_type = self.model.predict([list(features.values())])[0]
-                return {"signal_type": str(signal_type), "confidence": 0.9}
-            except Exception:
-                pass
-        # Fallback heuristic
-        noise_dbm = features.get("noise_dbm", 0)
-        if noise_dbm < -80:
-            return {"signal_type": "NOISE", "confidence": 0.5}
-        return {"signal_type": "ADS-B", "confidence": 0.8}
+    # Callsign patterns typical of military / special operations
+    _MILITARY_CALLSIGNS = (
+        "RCH",   # USAF Air Mobility Command
+        "MOOSE",
+        "REACH",
+        "FORTE",
+        "JAKE",
+        "ROCKY",
+        "DUKE",
+        "IRON",
+        "STEEL",
+    )
+
+    def classify(self, aircraft_data: dict) -> dict:
+        """
+        Classify a single aircraft based on available ADS-B data.
+
+        Parameters
+        ----------
+        aircraft_data : dict
+            Keys may include: hex_code, callsign, altitude, ground_speed,
+            track, latitude, longitude, rssi, is_shadow, …
+
+        Returns
+        -------
+        dict with keys: category, confidence, flags
+        """
+        hex_code = (aircraft_data.get("hex_code") or "").upper()
+        callsign = (aircraft_data.get("callsign") or "").upper().strip()
+        altitude = aircraft_data.get("altitude")
+        ground_speed = aircraft_data.get("ground_speed")
+        is_shadow = aircraft_data.get("is_shadow", False)
+
+        flags: list = []
+        category = "UNKNOWN"
+        confidence = 0.5
+
+        # ---- Shadow / no-position detection ----
+        if is_shadow or (aircraft_data.get("latitude") is None and aircraft_data.get("longitude") is None):
+            flags.append("NO_POSITION")
+
+        # ---- Hex-prefix based military detection ----
+        if any(hex_code.startswith(pfx) for pfx in self._MILITARY_PREFIXES):
+            category = "MILITARY"
+            confidence = 0.85
+            flags.append("MILITARY_HEX_PREFIX")
+
+        # ---- Callsign-based military detection ----
+        if callsign and any(callsign.startswith(cs) for cs in self._MILITARY_CALLSIGNS):
+            category = "MILITARY"
+            confidence = max(confidence, 0.90)
+            flags.append("MILITARY_CALLSIGN")
+
+        # ---- Basic civilian airline detection ----
+        if category == "UNKNOWN" and callsign and len(callsign) >= 3:
+            # IATA/ICAO airline codes are typically 2–3 uppercase letters followed by digits
+            prefix = "".join(c for c in callsign if c.isalpha())
+            if 2 <= len(prefix) <= 3:
+                category = "COMMERCIAL"
+                confidence = 0.70
+
+        # ---- Altitude / speed anomaly flags ----
+        if altitude is not None:
+            if altitude < 0:
+                flags.append("NEGATIVE_ALTITUDE")
+            elif altitude > 60000:
+                flags.append("EXTREME_ALTITUDE")
+
+        if ground_speed is not None:
+            if ground_speed > 600:
+                flags.append("HIGH_SPEED")
+            elif ground_speed < 0:
+                flags.append("INVALID_SPEED")
+
+        logger.debug(
+            f"Classified {hex_code} ({callsign}) → {category} "
+            f"(confidence={confidence:.2f}, flags={flags})"
+        )
+
+        return {
+            "category": category,
+            "confidence": round(confidence, 2),
+            "flags": flags,
+            "classified_at": datetime.utcnow().isoformat(),
+        }
 
 
 def get_classifier() -> SignalClassifier:
-    """Return a singleton SignalClassifier instance."""
-    global _classifier_instance
-    if _classifier_instance is None:
-        _classifier_instance = SignalClassifier()
-    return _classifier_instance
+    """
+    Factory function — returns a ready-to-use SignalClassifier instance.
+    Swap this out for a ML-model-backed classifier in future iterations.
+    """
+    logger.info("SignalClassifier initialised (rule-based stub)")
+    return SignalClassifier()
