@@ -1,10 +1,10 @@
 """
-OPHIR 2.0 | AEGIS-X Configuration Module
+OPHIR 2.0 Configuration
 """
 
-import os
-from pathlib import Path
-from enum import Enum
+# Server settings
+HOST = "0.0.0.0"
+PORT = 8080
 
 PROJECT_ROOT = Path(__file__).parent
 VENV_ROOT = PROJECT_ROOT / "venv"
@@ -74,54 +74,11 @@ ANTENNA_PROFILES: dict = {
 
 DEFAULT_ANTENNA_MODE: AntennaMode = AntennaMode.AIR
 
+# LLM settings
+ENABLE_LLM_ANALYSIS = True
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "mistral:latest"
 OLLAMA_TIMEOUT = 60.0
-LLM_REPORT_SCHEDULE = "00:00"
 
-# LLM runtime defaults
-LLM_ENABLED_DEFAULT = True
-
-# LLM configuration aliases
-LLM_HOST = "localhost"
-LLM_PORT = 11434
-LLM_MODEL = "mistral:latest"
-LLM_TIMEOUT = 30
-
-LOG_LEVEL = "INFO"
-LOG_FORMAT = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
-LOG_FILE_MAX_SIZE = 100 * 1024 * 1024
-LOG_FILE_BACKUP_COUNT = 5
-LOG_RETENTION_DAYS = 30
-
-ASYNC_WORKERS = 8
-DB_COMMIT_BATCH_SIZE = 100
-CACHE_TTL = 300
-
-SECRET_KEY = os.getenv("OPHIR_SECRET_KEY", "dev-secret-change-in-production")
-ALLOWED_ORIGINS = ["http://localhost", "http://localhost:8080", "http://127.0.0.1:8080"]
-
-ENABLE_SHADOW_TRACKING = True
-ENABLE_LLM_ANALYSIS = True
-ENABLE_WEBSOCKET = True
-ENABLE_HISTORY_EXPORT = True
-
-# Database paths
-DB_PATH = "db/ophir.db"
-TRAINING_DB_PATH = "db/signal_training.db"
-RECORDS_DB_PATH = "db/records.db"
-
-# System behaviour
-SYSTEM_AUTONOMOUS = True
-AUTO_RESTART = True
-GRACEFUL_SHUTDOWN_TIMEOUT = 30
-
-class AircraftType(str, Enum):
-    MILITARY = "military"
-    CIVILIAN = "civilian"
-    UNKNOWN = "unknown"
-
-class TargetClass(str, Enum):
-    CONFIRMED = "confirmed"
-    SHADOW = "shadow"
-    ANOMALY = "anomaly"
+# Archive
+AIRCRAFT_ARCHIVE_PATH = "data/aircraft_archive.json"

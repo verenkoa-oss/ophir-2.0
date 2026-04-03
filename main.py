@@ -1,3 +1,257 @@
+"""
+OPHIR 2.0 — Main FastAPI application
+"""
+
+import asyncio
+import json
+import logging
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+import config
+from core.llm import LLMAnalyzer
+from core.sdr import SDRReader
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# In-memory aircraft store
+# ---------------------------------------------------------------------------
+
+aircraft_store: dict[str, dict] = {}
+
+# ---------------------------------------------------------------------------
+# Global services
+# ---------------------------------------------------------------------------
+
+sdr: SDRReader | None = None
+llm: LLMAnalyzer | None = None
+
+
+# ---------------------------------------------------------------------------
+# Lifespan context manager (replaces deprecated @app.on_event handlers)
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown logic for OPHIR."""
+    global sdr, llm
+
+    logger.info("🚀 OPHIR 2.0 STARTUP")
+    logger.info("Config: %s:%s", config.HOST, config.PORT)
+
+    # Initialise LLM
+    if config.ENABLE_LLM_ANALYSIS:
+        try:
+            llm = LLMAnalyzer()
+            await llm.init()
+        except Exception as exc:
+            logger.warning("LLM init failed (continuing without LLM): %s", exc)
+            llm = None
+
+    # Initialise SDR reader
+    def _on_aircraft(data: dict) -> None:
+        hex_code = data.get("hex", "").upper()
+        if hex_code:
+            aircraft_store[hex_code] = data
+
+    try:
+        sdr = SDRReader(on_aircraft=_on_aircraft)
+        await sdr.start()
+        logger.info("✅ SDR reader started")
+    except Exception as exc:
+        logger.error("SDR reader task error: %s", exc)
+        sdr = None
+
+    logger.info("✅ OPHIR startup complete")
+
+    yield  # Application runs here
+
+    # Shutdown
+    logger.info("🛑 OPHIR shutdown")
+    if sdr:
+        await sdr.stop()
+    if llm:
+        await llm.close()
+
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
+
+app = FastAPI(
+    title="OPHIR 2.0",
+    description="Aircraft anomaly detection and LLM analysis",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+
+# ---------------------------------------------------------------------------
+# Request / Response models
+# ---------------------------------------------------------------------------
+
+class AnalyzeRequest(BaseModel):
+    hex: str
+    callsign: str | None = None
+    altitude: int | None = None
+    speed: float | None = None
+    anomalies: list[str] = []
+
+
+class AnalyzeResponse(BaseModel):
+    hex: str
+    analysis: str
+    model: str
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+async def root():
+    return {
+        "service": "OPHIR 2.0",
+        "status": "running",
+        "routes": [
+            "/health",
+            "/aircraft",
+            "/aircraft/{hex_code}",
+            "/stats",
+            "/api/v1/analyze",
+            "/api/v1/archive/aircraft",
+        ],
+    }
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "llm_available": llm is not None,
+        "sdr_available": sdr is not None,
+    }
+
+
+@app.get("/aircraft")
+async def get_aircraft():
+    return {"aircraft": list(aircraft_store.values()), "count": len(aircraft_store)}
+
+
+@app.get("/aircraft/{hex_code}")
+async def get_aircraft_by_hex(hex_code: str):
+    key = hex_code.upper()
+    if key not in aircraft_store:
+        raise HTTPException(status_code=404, detail="Aircraft not found")
+    aircraft = aircraft_store[key]
+
+    # Optionally enrich with LLM analysis for any flagged anomalies
+    analysis: str | None = None
+    if config.ENABLE_LLM_ANALYSIS and llm:
+        try:
+            analysis = await llm.analyze_anomaly(
+                hex_code=key,
+                anomaly_type="on_demand_lookup",
+                aircraft_data=aircraft,
+            )
+        except Exception as exc:
+            logger.warning("LLM analysis failed for %s: %s", key, exc)
+
+    return {"aircraft": aircraft, "analysis": analysis}
+
+
+@app.get("/stats")
+async def stats():
+    return {
+        "aircraft_tracked": len(aircraft_store),
+        "llm_enabled": config.ENABLE_LLM_ANALYSIS,
+        "llm_model": config.OLLAMA_MODEL,
+        "sdr_host": config.DUMP1090_HOST,
+        "sdr_port": config.DUMP1090_PORT,
+    }
+
+
+@app.post("/api/v1/analyze", response_model=AnalyzeResponse)
+async def analyze(request: AnalyzeRequest):
+    """Accept aircraft anomaly data and return LLM analysis."""
+    if not config.ENABLE_LLM_ANALYSIS:
+        raise HTTPException(status_code=503, detail="LLM analysis is disabled")
+    if llm is None:
+        raise HTTPException(status_code=503, detail="LLM service is unavailable")
+
+    aircraft_data: dict[str, Any] = {}
+    if request.callsign is not None:
+        aircraft_data["callsign"] = request.callsign
+    if request.altitude is not None:
+        aircraft_data["altitude"] = request.altitude
+    if request.speed is not None:
+        aircraft_data["speed"] = request.speed
+
+    anomaly_type = ", ".join(request.anomalies) if request.anomalies else "unknown"
+
+    try:
+        analysis = await llm.analyze_anomaly(
+            hex_code=request.hex,
+            anomaly_type=anomaly_type,
+            aircraft_data=aircraft_data,
+        )
+    except Exception as exc:
+        logger.error("LLM analysis error for %s: %s", request.hex, exc)
+        raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
+
+    return AnalyzeResponse(hex=request.hex, analysis=analysis, model=config.OLLAMA_MODEL)
+
+
+@app.get("/api/v1/archive/aircraft")
+async def archive_aircraft():
+    """Return aircraft records from the JSON archive."""
+    archive_path = config.AIRCRAFT_ARCHIVE_PATH
+    if not os.path.exists(archive_path):
+        return {"aircraft": [], "count": 0}
+    try:
+        with open(archive_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return {"aircraft": data, "count": len(data)}
+        return {"aircraft": data, "count": 1}
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=500, detail=f"Archive read error: {exc}") from exc
+
+
+@app.get("/web/{file_path:path}")
+async def serve_web(file_path: str):
+    """Serve static files from the web directory."""
+    web_root = Path("web").resolve()
+    requested = (web_root / file_path).resolve()
+    if not requested.is_relative_to(web_root):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not requested.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(str(requested))
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=False)
 #!/usr/bin/env python3
 """OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR"""
 import sys
@@ -8,6 +262,7 @@ import asyncio
 import collections
 import json
 import logging
+import math
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -33,6 +288,8 @@ from core.signal_classifier import get_classifier
 from core.threat_detector import get_detector
 from core.database import db_manager
 from core.llm import LLMAnalyzer
+from core.distance_calculator import estimate_distance
+from core.learning_engine import get_learning_engine
 from db.schema import Aircraft
 import config
 
@@ -40,6 +297,7 @@ sdr_manager = None
 classifier = None
 detector = None
 llm_analyzer = None
+learning_engine = None
 
 # Active WebSocket connections
 _ws_aircraft_clients: list[WebSocket] = []
@@ -96,13 +354,22 @@ _signals_processed: int = 0
 
 @app.on_event("startup")
 async def startup():
-    global sdr_manager, classifier, detector, llm_analyzer, _tracking_task, _broadcast_task
+    global sdr_manager, classifier, detector, llm_analyzer, learning_engine
+    global _tracking_task, _broadcast_task
     global _antenna_mode, _llm_enabled, _dump1090_start_monotonic
     global _system_start_monotonic, _osc_task
     logger.info("="*80)
     logger.info("🚀 OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR | STARTING...")
     try:
         sdr_manager = SDRReader()
+
+        # Connect to dump1090 and start _continuous_read() background task
+        connected = await sdr_manager.connect()
+        if not connected:
+            logger.error("❌ Failed to connect to dump1090 - check that dump1090 --net is running")
+        else:
+            logger.info("✅ Connected to dump1090 - REAL DATA MODE (PORT 30001)")
+
         # Apply the default antenna mode from config
         sdr_manager.set_antenna_mode(_antenna_mode)
         _tracking_task = asyncio.create_task(sdr_manager.start_tracking())
@@ -117,6 +384,9 @@ async def startup():
         llm_analyzer = LLMAnalyzer()
         llm_analyzer.set_enabled(_llm_enabled)
         logger.info(f"✅ LLM Analyzer INITIALIZED (enabled={_llm_enabled})")
+        learning_engine = get_learning_engine()
+        await learning_engine.start()
+        logger.info("✅ Learning Engine STARTED")
         # Background task: broadcast live aircraft to WebSocket clients
         _broadcast_task = asyncio.create_task(_broadcast_loop())
         # Background task: sample oscilloscope data and push to WS clients
@@ -128,6 +398,16 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    global sdr_manager, llm_analyzer, learning_engine, _tracking_task, _broadcast_task
+    logger.info("🛑 OPHIR 2.0 shutting down...")
+    if sdr_manager:
+        await sdr_manager.close()
+
+@app.get("/")
+async def root():
+    for path in ("web/dashboard.html", "dashboard.html"):
+        if os.path.exists(path):
+            return FileResponse(path, media_type="text/html")
     global sdr_manager, llm_analyzer, _tracking_task, _broadcast_task, _osc_task
     logger.info("🛑 OPHIR 2.0 shutting down...")
     for task in (_broadcast_task, _osc_task):
@@ -141,6 +421,8 @@ async def shutdown():
         await sdr_manager.stop_tracking()
     if llm_analyzer:
         await llm_analyzer.close()
+    if learning_engine:
+        await learning_engine.stop()
 
 
 async def _broadcast_loop():
@@ -150,6 +432,13 @@ async def _broadcast_loop():
         if not sdr_manager:
             continue
         aircraft_list = list(sdr_manager.aircraft_dict.values())
+
+        # Feed civilian aircraft (with GPS) into the learning engine
+        if learning_engine:
+            for ac in aircraft_list:
+                if ac.get("latitude") is not None and ac.get("longitude") is not None:
+                    learning_engine.record_civilian_observation(ac)
+
         payload = json.dumps({"aircraft": aircraft_list, "count": len(aircraft_list)})
         dead_aircraft_clients: list[WebSocket] = []
         for ws in _ws_aircraft_clients:
@@ -248,18 +537,17 @@ async def _oscilloscope_sample_loop():
 
 @app.get("/")
 async def root():
-    """Serve the main dashboard."""
-    for candidate in ("web/dashboard.html", "dashboard.html"):
-        if os.path.exists(candidate):
-            return FileResponse(candidate, media_type="text/html")
+    """Serve dashboard if available, otherwise return API info."""
+    dashboard_path = Path(__file__).parent / "web" / "dashboard.html"
+    if dashboard_path.exists():
+        return FileResponse(str(dashboard_path), media_type="text/html")
     return {"name": "OPHIR 2.0 | AEGIS-X", "version": "2.0.0", "status": "operational"}
 
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
-        "version": "2.0",
-        "sdr_connected": sdr_manager is not None,
+        "sdr_connected": sdr_manager is not None and getattr(sdr_manager, "connected", False),
         "detector_loaded": detector is not None,
     }
 
@@ -279,11 +567,29 @@ async def get_noise():
         return {
             "current_signal_type": noise_data.get('signal_type', 'UNKNOWN'),
             "signal_confidence": noise_data.get('confidence', 0),
-            "noise_dbm": noise_data.get('noise_dbm', 0)
+            "noise_dbm": noise_data.get('noise_dbm', -95.0),
+            "adsb_dbm": noise_data.get('adsb_dbm', -95.0),
+            "noise_history": noise_data.get('noise_history', []),
+            "adsb_history": noise_data.get('adsb_history', []),
         }
     except Exception as e:
         logger.error(f"Noise error: {e}")
         return {"current_signal_type": "ERROR", "error": str(e)}
+
+@app.get("/raw")
+async def get_raw():
+    """Return recent raw dump1090 messages for terminal display"""
+    if not sdr_manager:
+        return {"messages": [], "connected": False}
+    try:
+        noise_data = await sdr_manager.get_noise_data()
+        return {
+            "messages": noise_data.get('raw_messages', []),
+            "connected": getattr(sdr_manager, 'connected', False),
+        }
+    except Exception as e:
+        logger.error(f"Raw error: {e}")
+        return {"messages": [], "connected": False}
 
 @app.get("/events")
 async def get_events():
@@ -350,594 +656,548 @@ async def get_dashboard():
         raise HTTPException(status_code=404, detail="Dashboard not found")
 
 
+@app.get("/index.html")
+@app.get("/archive")
+async def get_index():
+    """Serve the main archive / dashboard HTML page."""
+    for candidate in ["web/index.html", "index.html"]:
+        if os.path.exists(candidate):
+            return FileResponse(candidate, media_type="text/html")
+    raise HTTPException(status_code=404, detail="index.html not found")
+
+
 # ---------------------------------------------------------------------------
-# /api/v1 endpoints
+# v1 API endpoints
 # ---------------------------------------------------------------------------
+
+class AnalyzeRequest(BaseModel):
+    hex_code: str
+    anomaly_type: Optional[str] = "UNKNOWN"
+    aircraft_data: Optional[dict] = {}
+
 
 @app.post("/api/v1/analyze")
-async def analyze_aircraft(aircraft_data: dict):
-    """Accept aircraft data and return LLM analysis."""
-    if not aircraft_data:
-        raise HTTPException(status_code=400, detail="aircraft_data is required")
-
-    hex_code = aircraft_data.get("hex_code", "UNKNOWN")
-    anomaly_type = aircraft_data.get("anomaly_type", "GENERAL_ANALYSIS")
-
-    if llm_analyzer and llm_analyzer.enabled:
-        try:
-            analysis = await llm_analyzer.analyze_anomaly(hex_code, anomaly_type, aircraft_data)
-        except Exception as e:
-            logger.error(f"LLM analysis error: {e}")
-            analysis = "LLM analysis unavailable"
-    elif llm_analyzer and not llm_analyzer.enabled:
-        analysis = "LLM analysis is currently disabled. Enable via POST /api/v1/llm/toggle."
-    else:
-        analysis = "LLM analyzer not initialized"
-
-    if classifier:
-        classification = classifier.classify(aircraft_data)
-    else:
-        classification = {"category": "UNKNOWN", "confidence": 0.0, "reason": "classifier not ready"}
-
-    return {
-        "hex_code": hex_code,
-        "analysis": analysis,
-        "classification": classification,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+async def analyze_aircraft(req: AnalyzeRequest):
+    """Analyse aircraft data with the local LLM."""
+    analysis_text = "Analysis unavailable"
+    try:
+        from core.llm import LLMAnalyzer
+        llm = LLMAnalyzer()
+        await llm.init()
+        raw = await llm.analyze_anomaly(
+            req.hex_code,
+            req.anomaly_type,
+            req.aircraft_data or {},
+        )
+        await llm.close()
+        # Only surface the result when it is clearly a successful LLM response
+        # (not an internal error message that may embed exception details).
+        if raw and not raw.startswith(("Error:", "Analysis failed", "Analysis timeout")):
+            analysis_text = raw
+    except Exception as exc:
+        logger.error("/api/v1/analyze error: %s", type(exc).__name__)
+    return {"hex_code": req.hex_code, "analysis": analysis_text, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @app.get("/api/v1/archive/aircraft")
-async def get_archive_aircraft():
-    """Return all aircraft records stored in the database."""
+async def archive_aircraft():
+    """Return all aircraft stored in the database archive."""
     try:
+        from core.database import db_manager
         session = db_manager.get_sync_session()
         try:
-            records = session.query(Aircraft).all()
-            result = []
-            for ac in records:
-                result.append({
-                    "hex_code": ac.hex_code,
-                    "callsign": ac.callsign,
-                    "aircraft_type": ac.aircraft_type,
-                    "country": ac.country,
-                    "latitude": ac.latitude,
-                    "longitude": ac.longitude,
-                    "altitude": ac.altitude,
-                    "ground_speed": ac.ground_speed,
-                    "track": ac.track,
-                    "rssi": ac.rssi,
-                    "is_shadow": ac.is_shadow,
-                    "first_seen": ac.first_seen.isoformat() if ac.first_seen else None,
-                    "last_seen": ac.last_seen.isoformat() if ac.last_seen else None,
-                })
-        finally:
-            session.close()
-        return {"aircraft": result, "count": len(result)}
-    except Exception as e:
-        logger.error(f"Archive error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve aircraft archive")
-
-
-@app.websocket("/api/v1/live/aircraft")
-async def ws_live_aircraft(websocket: WebSocket):
-    """WebSocket endpoint – streams live aircraft data every 2 seconds."""
-    await websocket.accept()
-    _ws_aircraft_clients.append(websocket)
-    logger.info(f"WS /api/v1/live/aircraft client connected ({len(_ws_aircraft_clients)} total)")
-    try:
-        while True:
-            # Keep the connection alive; data is pushed by _broadcast_loop
-            await asyncio.sleep(30)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in _ws_aircraft_clients:
-            _ws_aircraft_clients.remove(websocket)
-        logger.info("WS /api/v1/live/aircraft client disconnected")
-
-
-@app.websocket("/api/v1/threats/live")
-async def ws_live_threats(websocket: WebSocket):
-    """WebSocket endpoint – streams threat/anomaly events."""
-    await websocket.accept()
-    _ws_threats_clients.append(websocket)
-    logger.info(f"WS /api/v1/threats/live client connected ({len(_ws_threats_clients)} total)")
-    try:
-        while True:
-            await asyncio.sleep(30)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in _ws_threats_clients:
-            _ws_threats_clients.remove(websocket)
-        logger.info("WS /api/v1/threats/live client disconnected")
-
-
-# ---------------------------------------------------------------------------
-# Button 1: Antenna Mode Switch (GARAGE / AIR)
-# ---------------------------------------------------------------------------
-
-@app.put("/api/v1/antenna/mode")
-async def set_antenna_mode(body: dict):
-    """Switch the active antenna profile at runtime (no restart required).
-
-    Request body: {"mode": "GARAGE" | "AIR"}
-    """
-    global _antenna_mode
-
-    raw_mode = body.get("mode", "").upper()
-    try:
-        mode = config.AntennaMode(raw_mode)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid mode '{raw_mode}'. Accepted values: GARAGE, AIR",
-        )
-
-    _antenna_mode = mode
-    profile = config.ANTENNA_PROFILES[mode]
-
-    if sdr_manager:
-        sdr_manager.set_antenna_mode(mode)
-
-    logger.info(
-        f"📡 Antenna mode switched to {mode.value} at {datetime.now(timezone.utc).isoformat()}"
-    )
-    return {
-        "antenna_mode": mode.value,
-        "rssi_threshold": profile["rssi_threshold"],
-        "gain": profile["gain"],
-        "description": profile["description"],
-        "status": "switched",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@app.get("/api/v1/antenna/mode")
-async def get_antenna_mode():
-    """Return the currently active antenna profile."""
-    profile = config.ANTENNA_PROFILES[_antenna_mode]
-    return {
-        "antenna_mode": _antenna_mode.value,
-        "rssi_threshold": profile["rssi_threshold"],
-        "gain": profile["gain"],
-        "description": profile["description"],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Button 2: dump1090 Process Management (ON / OFF / RESTART / STATUS)
-# ---------------------------------------------------------------------------
-
-def _get_dump1090_pid() -> int | None:
-    """Return PID of a running dump1090 process, or None."""
-    try:
-        result = subprocess.run(
-            ["pgrep", "-x", "dump1090"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            pid_str = result.stdout.strip().splitlines()[0]
-            return int(pid_str)
-    except Exception:
-        pass
-    return None
-
-
-def _dump1090_uptime() -> float | None:
-    """Return seconds since dump1090 start was last recorded, or None."""
-    if _dump1090_start_monotonic is None:
-        return None
-    return round(time.monotonic() - _dump1090_start_monotonic, 1)
-
-
-@app.get("/api/v1/dump1090/status")
-async def dump1090_status():
-    """Return current dump1090 operational status."""
-    pid = _get_dump1090_pid()
-    running = pid is not None
-    aircraft_count = len(sdr_manager.aircraft_dict) if sdr_manager else 0
-    last_msg = sdr_manager.get_last_signal_timestamp() if sdr_manager else None
-
-    return {
-        "dump1090_status": "running" if running else "stopped",
-        "pid": pid,
-        "connected": (sdr_manager.connected if sdr_manager else False),
-        "uptime_seconds": _dump1090_uptime(),
-        "aircraft_count": aircraft_count,
-        "last_message": last_msg,
-        "error": None,
-    }
-
-
-@app.post("/api/v1/dump1090/start")
-async def dump1090_start():
-    """Start dump1090 service (uses systemctl if available, otherwise direct)."""
-    global _dump1090_start_monotonic
-
-    pid = _get_dump1090_pid()
-    if pid:
-        return {
-            "dump1090_status": "running",
-            "pid": pid,
-            "action": "already_running",
-            "error": None,
-        }
-
-    error_msg: str | None = None
-    # Try systemctl first, fall back to direct binary
-    for cmd in [
-        ["systemctl", "start", "dump1090-fa"],
-        ["systemctl", "start", "dump1090-mutability"],
-        ["systemctl", "start", "dump1090"],
-    ]:
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if proc.returncode == 0:
-                _dump1090_start_monotonic = time.monotonic()
-                logger.info(f"✅ dump1090 started via: {' '.join(cmd)}")
-                return {
-                    "dump1090_status": "running",
-                    "action": "started",
-                    "command": " ".join(cmd),
-                    "error": None,
-                }
-            error_msg = proc.stderr.strip() or proc.stdout.strip()
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            error_msg = str(e)
-
-    logger.error(f"❌ Failed to start dump1090: {error_msg}")
-    return {
-        "dump1090_status": "stopped",
-        "action": "start_failed",
-        "error": "Could not start dump1090. Is it installed?",
-    }
-
-
-@app.post("/api/v1/dump1090/stop")
-async def dump1090_stop():
-    """Stop dump1090 service."""
-    global _dump1090_start_monotonic
-
-    pid = _get_dump1090_pid()
-    if not pid:
-        return {
-            "dump1090_status": "stopped",
-            "action": "already_stopped",
-            "error": None,
-        }
-
-    error_msg: str | None = None
-    for cmd in [
-        ["systemctl", "stop", "dump1090-fa"],
-        ["systemctl", "stop", "dump1090-mutability"],
-        ["systemctl", "stop", "dump1090"],
-    ]:
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if proc.returncode == 0:
-                _dump1090_start_monotonic = None
-                logger.info(f"🛑 dump1090 stopped via: {' '.join(cmd)}")
-                # Disconnect SDR reader so it stops buffering stale data
-                if sdr_manager:
-                    sdr_manager.connected = False
-                return {
-                    "dump1090_status": "stopped",
-                    "action": "stopped",
-                    "command": " ".join(cmd),
-                    "error": None,
-                }
-            error_msg = proc.stderr.strip() or proc.stdout.strip()
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            error_msg = str(e)
-
-    # As last resort try SIGTERM on the PID
-    if pid:
-        try:
-            subprocess.run(["kill", str(pid)], check=True, timeout=5)
-            _dump1090_start_monotonic = None
-            if sdr_manager:
-                sdr_manager.connected = False
-            logger.info(f"🛑 dump1090 (PID {pid}) terminated via SIGTERM")
+            aircraft_list = db_manager.get_all_aircraft(session)
             return {
-                "dump1090_status": "stopped",
-                "action": "stopped",
-                "command": f"kill {pid}",
-                "error": None,
+                "aircraft": [
+                    {
+                        "hex_code": ac.hex_code,
+                        "callsign": ac.callsign,
+                        "aircraft_type": ac.aircraft_type,
+                        "country": ac.country,
+                        "latitude": ac.latitude,
+                        "longitude": ac.longitude,
+                        "altitude": ac.altitude,
+                        "ground_speed": ac.ground_speed,
+                        "track": ac.track,
+                        "rssi": ac.rssi,
+                        "is_shadow": ac.is_shadow,
+                        "first_seen": ac.first_seen.isoformat() if ac.first_seen else None,
+                        "last_seen": ac.last_seen.isoformat() if ac.last_seen else None,
+                    }
+                    for ac in aircraft_list
+                ],
+                "count": len(aircraft_list),
             }
-        except Exception as e:
-            error_msg = str(e)
+        finally:
+            session.close()
+    except Exception as exc:
+        logger.error(f"/api/v1/archive/aircraft error: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve archive")
 
-    logger.error(f"❌ Failed to stop dump1090: {error_msg}")
+
+@app.get("/api/v1/live/aircraft")
+async def live_aircraft():
+    """Return currently tracked live aircraft."""
+    if not sdr_manager:
+        return {"aircraft": [], "count": 0, "status": "SDR not connected"}
+    aircraft_list = list(sdr_manager.aircraft_dict.values())
     return {
-        "dump1090_status": "running",
-        "action": "stop_failed",
-        "error": "Could not stop dump1090.",
-    }
-
-
-@app.post("/api/v1/dump1090/restart")
-async def dump1090_restart():
-    """Restart dump1090 service."""
-    stop_result = await dump1090_stop()
-    await asyncio.sleep(_DUMP1090_RESTART_DELAY)
-    start_result = await dump1090_start()
-    return {
-        "dump1090_status": start_result.get("dump1090_status"),
-        "action": "restarted",
-        "stop_result": stop_result,
-        "start_result": start_result,
-        "error": start_result.get("error"),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Button 3: LLM Toggle (Enable / Disable AI analysis)
-# ---------------------------------------------------------------------------
-
-@app.post("/api/v1/llm/toggle")
-async def llm_toggle():
-    """Toggle LLM analysis on/off at runtime."""
-    global _llm_enabled
-
-    if not llm_analyzer:
-        raise HTTPException(status_code=503, detail="LLM analyzer not initialized")
-
-    _llm_enabled = not llm_analyzer.enabled
-    llm_analyzer.set_enabled(_llm_enabled)
-    action = "enabled" if _llm_enabled else "disabled"
-    msg = (
-        "LLM analysis enabled. Full AI analysis resumed."
-        if _llm_enabled
-        else "LLM analysis disabled. Analyze endpoint will return placeholder responses."
-    )
-    logger.info(f"🤖 LLM {action} at {datetime.now(timezone.utc).isoformat()}")
-    return {
-        "llm_enabled": _llm_enabled,
-        "action": action,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "message": msg,
-    }
-
-
-@app.get("/api/v1/llm/status")
-async def llm_status():
-    """Return current LLM / Ollama status."""
-    if not llm_analyzer:
-        return {
-            "llm_enabled": False,
-            "ollama_connected": False,
-            "model": config.OLLAMA_MODEL,
-            "response_time_ms": None,
-            "last_analysis": None,
-        }
-
-    # Refresh connection state without blocking long
-    try:
-        ollama_ok = await asyncio.wait_for(
-            llm_analyzer.check_connection(), timeout=_OLLAMA_STATUS_CHECK_TIMEOUT
-        )
-    except asyncio.TimeoutError:
-        ollama_ok = False
-
-    return {
-        "llm_enabled": llm_analyzer.enabled,
-        "ollama_connected": ollama_ok,
-        "model": llm_analyzer.model,
-        "response_time_ms": llm_analyzer.response_time_ms,
-        "last_analysis": llm_analyzer.last_analysis,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Oscilloscope endpoints
-# ---------------------------------------------------------------------------
-
-@app.get("/api/v1/oscilloscope/data")
-async def get_oscilloscope_data():
-    """Return the last 60-second oscilloscope snapshot (CH1: ADS-B, CH2: noise)."""
-    ch1 = list(_osc_ch1)
-    ch2 = list(_osc_ch2)
-    return {
-        "ch1": ch1,
-        "ch2": ch2,
-        "timestamps": list(_osc_times),
-        "ch1_stats": _compute_stats(ch1),
-        "ch2_stats": _compute_stats(ch2),
+        "aircraft": aircraft_list,
+        "count": len(aircraft_list),
+        "status": "live",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
-@app.websocket("/ws/oscilloscope")
-async def ws_oscilloscope(websocket: WebSocket):
-    """WebSocket endpoint – streams live oscilloscope data every second."""
+# Active WebSocket connections
+_ws_clients: list[WebSocket] = []
+
+
+@app.websocket("/ws/live")
+async def websocket_live(websocket: WebSocket):
+    """WebSocket endpoint for real-time aircraft updates."""
     await websocket.accept()
-    _ws_osc_clients.append(websocket)
-    logger.info(f"WS /ws/oscilloscope client connected ({len(_ws_osc_clients)} total)")
+    _ws_clients.append(websocket)
+    logger.info(f"WebSocket client connected ({len(_ws_clients)} total)")
     try:
         while True:
-            await asyncio.sleep(30)
+            # Push current aircraft state every second
+            if sdr_manager:
+                payload = {
+                    "type": "aircraft_update",
+                    "aircraft": list(sdr_manager.aircraft_dict.values()),
+                    "count": len(sdr_manager.aircraft_dict),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            else:
+                payload = {"type": "waiting", "message": "SDR not connected"}
+            await websocket.send_text(json.dumps(payload))
+            await asyncio.sleep(1)
     except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in _ws_osc_clients:
-            _ws_osc_clients.remove(websocket)
-        logger.info("WS /ws/oscilloscope client disconnected")
+        _ws_clients.remove(websocket)
+        logger.info(f"WebSocket client disconnected ({len(_ws_clients)} total)")
+    except Exception as exc:
+        logger.error(f"WebSocket error: {exc}")
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
 
 
 # ---------------------------------------------------------------------------
-# Gain control endpoints
+# Distance calculation endpoint
 # ---------------------------------------------------------------------------
 
-@app.get("/api/v1/gain/current")
-async def get_gain():
-    """Return the current gain setting in dB."""
+@app.post("/api/v1/distance")
+async def calculate_distance(body: dict):
+    """Estimate aircraft distance from RSSI or GPS coordinates.
+
+    Request body (all fields optional):
+        rssi_dbm    – received signal strength (dBm)
+        latitude    – aircraft latitude (decimal degrees)
+        longitude   – aircraft longitude (decimal degrees)
+    """
+    rssi = body.get("rssi_dbm")
+    lat = body.get("latitude")
+    lon = body.get("longitude")
+
+    result = estimate_distance(rssi, lat, lon)
+
+    # Enhance estimate with calibrated model if only RSSI available
+    if result["method"] == "rssi" and rssi is not None and learning_engine:
+        calibrated = learning_engine.calibrated_distance_km(float(rssi))
+        result["distance_km_calibrated"] = calibrated
+    else:
+        result["distance_km_calibrated"] = result.get("distance_km")
+
+    result["observer_lat"] = config.OBSERVER_LAT
+    result["observer_lon"] = config.OBSERVER_LON
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Learning engine endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/learning/stats")
+async def learning_stats():
+    """Return learning engine statistics (training sample count, calibration)."""
+    if not learning_engine:
+        return {"error": "Learning engine not initialized"}
+    return learning_engine.stats()
+
+
+@app.get("/api/v1/learning/samples")
+async def learning_samples(limit: int = 50):
+    """Return recent training samples collected from civilian aircraft."""
+    if not learning_engine:
+        return {"samples": [], "count": 0}
+    samples = learning_engine.recent_samples(limit=min(limit, 200))
+    return {"samples": samples, "count": len(samples)}
+
+
+# ---------------------------------------------------------------------------
+# Aircraft classification endpoint (per-aircraft LLM analysis)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/aircraft/{hex_code}/analysis")
+async def aircraft_analysis(hex_code: str):
+    """Return classification and LLM analysis for a specific aircraft."""
+    hex_code = hex_code.upper()
+    if not sdr_manager:
+        raise HTTPException(status_code=503, detail="SDR not initialized")
+
+    aircraft_data = sdr_manager.aircraft_dict.get(hex_code)
+    if not aircraft_data:
+        raise HTTPException(status_code=404, detail=f"Aircraft {hex_code} not in live data")
+
+    # Distance estimate
+    dist_info = estimate_distance(
+        aircraft_data.get("rssi"),
+        aircraft_data.get("latitude"),
+        aircraft_data.get("longitude"),
+    )
+    if dist_info["method"] == "rssi" and aircraft_data.get("rssi") is not None and learning_engine:
+        dist_info["distance_km_calibrated"] = learning_engine.calibrated_distance_km(
+            float(aircraft_data["rssi"])
+        )
+
+    # Classification
+    classification = (
+        classifier.classify(aircraft_data)
+        if classifier
+        else {"category": "UNKNOWN", "confidence": 0.0, "reason": "classifier not ready"}
+    )
+
+    # LLM analysis (non-blocking: skip if disabled or unavailable)
+    llm_result = "LLM analysis not requested"
+    if llm_analyzer and llm_analyzer.enabled:
+        anomaly_type = classification.get("category", "GENERAL")
+        try:
+            llm_result = await asyncio.wait_for(
+                llm_analyzer.analyze_anomaly(hex_code, anomaly_type, aircraft_data),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            llm_result = "LLM analysis timed out"
+        except Exception as exc:
+            logger.error(f"LLM analysis error for {hex_code}: {exc}")
+            llm_result = "LLM analysis error"
+
     return {
-        "gain_db": _current_gain,
-        "range": {"min": -5, "max": 40},
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@app.post("/api/v1/gain/set")
-async def set_gain(value: float = Query(..., ge=-5, le=40, description="Gain in dB")):
-    """Set the receiver gain (-5 … +40 dB)."""
-    global _current_gain
-    _current_gain = round(value, 1)
-    logger.info(f"🎚️ Gain set to {_current_gain} dB")
-    return {
-        "gain_db": _current_gain,
-        "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Noise threshold / filter endpoints
-# ---------------------------------------------------------------------------
-
-@app.get("/api/v1/noise/threshold")
-async def get_noise_threshold():
-    """Return current noise threshold and filter settings."""
-    cutoff = time.time() - 300
-    recent_events = [e for e in _noise_spike_events if e["ts"] >= cutoff]
-    return {
-        "threshold_dbm": _noise_threshold_dbm,
-        "filter_enabled": _noise_filter_enabled,
-        "alert_enabled": _noise_alert_enabled,
-        "show_events": _noise_show_events,
-        "noise_events_5min": len(recent_events),
-        "current_noise_dbm": list(_osc_ch2)[-1] if _osc_ch2 else None,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@app.post("/api/v1/noise/set")
-async def set_noise_threshold(
-    threshold: float = Query(-75.0, ge=-120, le=-20, description="Noise threshold in dBm"),
-    filter_enabled: bool = Query(True),
-    alert_enabled: bool = Query(True),
-    show_events: bool = Query(True),
-):
-    """Update noise threshold and filter flags."""
-    global _noise_threshold_dbm, _noise_filter_enabled, _noise_alert_enabled, _noise_show_events
-    _noise_threshold_dbm = round(threshold, 1)
-    _noise_filter_enabled = filter_enabled
-    _noise_alert_enabled = alert_enabled
-    _noise_show_events = show_events
-    logger.info(f"🔊 Noise threshold set to {_noise_threshold_dbm} dBm (filter={filter_enabled})")
-    return {
-        "threshold_dbm": _noise_threshold_dbm,
-        "filter_enabled": _noise_filter_enabled,
-        "alert_enabled": _noise_alert_enabled,
-        "show_events": _noise_show_events,
-        "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-# ---------------------------------------------------------------------------
-# System status / shutdown endpoints
-# ---------------------------------------------------------------------------
-
-@app.get("/api/v1/system/status")
-async def system_status():
-    """Return overall system health and runtime statistics."""
-    uptime_s = round(time.monotonic() - _system_start_monotonic)
-    aircraft_count = len(sdr_manager.aircraft_dict) if sdr_manager else 0
-    return {
-        "status": "operational",
-        "system_online": True,
-        "uptime_seconds": uptime_s,
-        "aircraft_tracked": aircraft_count,
-        "signals_processed": _signals_processed,
-        "errors": 0,
-        "gain_db": _current_gain,
-        "noise_threshold_dbm": _noise_threshold_dbm,
-        "noise_events_5min": len(_noise_spike_events),
-        "sdr_connected": (sdr_manager.connected if sdr_manager else False),
-        "llm_enabled": _llm_enabled,
-        "antenna_mode": _antenna_mode.value,
-        "observer_lat": config.OBSERVER_LATITUDE,
-        "observer_lon": config.OBSERVER_LONGITUDE,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@app.post("/api/v1/system/shutdown")
-async def system_shutdown():
-    """Initiate a graceful shutdown of the OPHIR 2.0 server."""
-    logger.info("🛑 Graceful shutdown requested via API")
-
-    async def _do_shutdown():
-        await asyncio.sleep(0.5)
-        raise SystemExit(0)
-
-    asyncio.create_task(_do_shutdown())
-    return {
-        "status": "shutting_down",
-        "message": "OPHIR 2.0 graceful shutdown initiated",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Aircraft annotation endpoint (add unknown aircraft to DB)
-# ---------------------------------------------------------------------------
-
-@app.post("/api/v1/aircraft/annotate")
-async def annotate_aircraft(body: dict):
-    """Store a user-supplied description for an unknown aircraft."""
-    hex_code = body.get("hex_code", "").upper()
-    if not hex_code:
-        raise HTTPException(status_code=400, detail="hex_code is required")
-
-    annotation = {
         "hex_code": hex_code,
-        "aircraft_type": body.get("aircraft_type", ""),
-        "aircraft_class": body.get("aircraft_class", "UNKNOWN"),
-        "country": body.get("country", ""),
-        "notes": body.get("notes", ""),
-        "annotated_at": datetime.now(timezone.utc).isoformat(),
+        "aircraft": aircraft_data,
+        "classification": classification,
+        "distance": dist_info,
+        "llm_analysis": llm_result,
+        "observer": {"lat": config.OBSERVER_LAT, "lon": config.OBSERVER_LON},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Aircraft Details API
+# ---------------------------------------------------------------------------
+
+# Observer location (Negev, Israel) used for azimuth/elevation calculations
+_OBSERVER_LAT = 31.073541
+_OBSERVER_LON = 35.037383
+_ADS_B_FREQ_MHZ = 1090.0
+# Typical ADS-B EIRP ≈ 250 W → ~54 dBm; 41 dBm gives reasonable range estimates
+_ADS_B_EIRP_DBM = 41.0
+_FEET_TO_METERS = 0.3048
+
+
+def _rssi_to_distance_km(rssi_dbm: float) -> float:
+    """Estimate distance in km from RSSI using the Friis free-space path loss model.
+
+    FSPL (dB) = 32.45 + 20·log10(f_MHz) + 20·log10(d_km)
+    RSSI = EIRP - FSPL  →  d_km = 10^((EIRP - RSSI - 32.45 - 20·log10(f)) / 20)
+    """
+    fspl = _ADS_B_EIRP_DBM - rssi_dbm
+    d_km = 10 ** ((fspl - 32.45 - 20 * math.log10(_ADS_B_FREQ_MHZ)) / 20)
+    return round(max(0.1, d_km), 2)
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return bearing from point 1 to point 2 in degrees (0–360)."""
+    lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
+    dlon_r = math.radians(lon2 - lon1)
+    x = math.sin(dlon_r) * math.cos(lat2_r)
+    y = math.cos(lat1_r) * math.sin(lat2_r) - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(dlon_r)
+    bearing = math.degrees(math.atan2(x, y))
+    return round((bearing + 360) % 360, 1)
+
+
+def _elevation_deg(distance_km: float, altitude_m: float) -> float:
+    """Estimate elevation angle in degrees given slant distance and aircraft altitude."""
+    if distance_km <= 0:
+        return 90.0
+    alt_km = altitude_m / 1000.0
+    return round(math.degrees(math.atan2(alt_km, distance_km)), 1)
+
+
+def _heading_to_cardinal(heading: float) -> str:
+    """Convert heading degrees to cardinal direction abbreviation."""
+    dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    return dirs[round(heading / 45) % 8]
+
+
+def _build_aircraft_details(hex_code: str, live: dict, db_rec) -> dict:
+    """Assemble the full details response from live data and DB record."""
+    hex_upper = hex_code.upper()
+
+    # --- position ---
+    lat = live.get("latitude")
+    lon = live.get("longitude")
+    alt_ft = live.get("altitude")  # SBS altitude is in feet
+    alt_m = round(alt_ft * _FEET_TO_METERS) if alt_ft is not None else None
+    speed_kt = live.get("ground_speed")
+    speed_kmh = round(speed_kt * 1.852) if speed_kt is not None else None
+    heading = live.get("track")
+    rssi = live.get("rssi")
+    vertical_rate = live.get("vertical_rate")
+    callsign = (live.get("callsign") or "").strip() or None
+
+    # --- signal ---
+    distance_km = _rssi_to_distance_km(rssi) if rssi is not None else None
+    azimuth = None
+    elevation = None
+    if lat is not None and lon is not None:
+        azimuth = _bearing_deg(_OBSERVER_LAT, _OBSERVER_LON, lat, lon)
+    if distance_km is not None and alt_m is not None:
+        elevation = _elevation_deg(distance_km, alt_m)
+
+    # Signal quality heuristic (0–100)
+    signal_quality = None
+    if rssi is not None:
+        # Map [-100 dBm, -50 dBm] linearly to [0, 100]
+        signal_quality = max(0, min(100, int((rssi + 100) * 2)))
+
+    # --- DB record fields (may be None) ---
+    db_callsign = None
+    db_type = None
+    db_country = None
+    db_in_db = False
+    db_first_logged = None
+    db_suspicious = False
+    db_notes = None
+    db_first_seen = None
+    db_last_seen = None
+
+    if db_rec:
+        db_in_db = True
+        db_callsign = db_rec.callsign
+        db_type = db_rec.aircraft_type
+        db_country = db_rec.country
+        db_suspicious = bool(getattr(db_rec, "suspicious", False))
+        db_notes = getattr(db_rec, "user_notes", None)
+        db_first_seen = db_rec.first_seen.isoformat() if db_rec.first_seen else None
+        db_last_seen = db_rec.last_seen.isoformat() if db_rec.last_seen else None
+        db_first_logged = db_rec.first_seen.strftime("%Y-%m-%d") if db_rec.first_seen else None
+
+    effective_callsign = callsign or db_callsign
+    effective_type = db_type
+    effective_country = db_country
+
+    # --- basic classification heuristics ---
+    threat_level = "NONE"
+    aircraft_class = "Unknown"
+    if db_in_db:
+        aircraft_class = "Civilian Commercial"
+        threat_level = "NONE"
+    elif not effective_callsign:
+        aircraft_class = "Unknown"
+        threat_level = "UNKNOWN"
+    else:
+        aircraft_class = "Unregistered"
+        threat_level = "LOW"
+
+    gps_transmitting = lat is not None and lon is not None
+
+    return {
+        "icao_hex": hex_upper,
+        "callsign": effective_callsign,
+        "country": effective_country,
+        "registration": None,
+        "airline": None,
+
+        "aircraft": {
+            "type": effective_type,
+            "model": None,
+            "manufacturer": None,
+            "engines": None,
+            "engine_type": None,
+            "max_altitude": None,
+            "cruise_speed": None,
+        },
+
+        "position": {
+            "latitude": lat,
+            "longitude": lon,
+            "altitude_ft": alt_ft,
+            "altitude_m": alt_m,
+            "speed_kt": speed_kt,
+            "speed_kmh": speed_kmh,
+            "heading": heading,
+            "heading_cardinal": _heading_to_cardinal(heading) if heading is not None else None,
+            "vertical_rate": vertical_rate,
+            "timestamp": live.get("last_seen"),
+        },
+
+        "signal": {
+            "rssi_dbm": rssi,
+            "signal_quality": signal_quality,
+            "distance_km": distance_km,
+            "distance_method": "Friis Free Space Loss (1090 MHz)" if rssi is not None else None,
+            "observer_lat": _OBSERVER_LAT,
+            "observer_lon": _OBSERVER_LON,
+            "azimuth": azimuth,
+            "elevation": elevation,
+        },
+
+        "classification": {
+            "aircraft_class": aircraft_class,
+            "threat_level": threat_level,
+            "gps_transmitting": gps_transmitting,
+            "military_suspect": False,
+            "jammer_detected": False,
+            "spoofing_detected": False,
+        },
+
+        "tracking": {
+            "first_seen": db_first_seen or live.get("first_seen"),
+            "last_seen": db_last_seen or live.get("last_seen"),
+            "message_count": live.get("messages"),
+        },
+
+        "database": {
+            "in_database": db_in_db,
+            "first_logged": db_first_logged,
+            "suspicious": db_suspicious,
+            "user_notes": db_notes,
+        },
+    }
+
+
+@app.get("/api/v1/aircraft/{hex_code}/details")
+async def get_aircraft_details(hex_code: str):
+    """Return detailed information for a single aircraft by ICAO hex code.
+
+    Combines live tracking data with the database record.  A 404 is returned
+    only when the aircraft is neither in the live tracking dict nor in the DB.
+    """
+    hex_upper = hex_code.upper()
+
+    # Live data from SDR tracking loop
+    live: dict = {}
+    if sdr_manager:
+        live = sdr_manager.aircraft_dict.get(hex_upper, {})
+
+    # Database record
+    db_rec = None
+    try:
+        session = db_manager.get_sync_session()
+        try:
+            db_rec = db_manager.get_aircraft_by_hex(session, hex_upper)
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning(f"DB lookup failed for {hex_upper}: {e}")
+
+    if not live and db_rec is None:
+        raise HTTPException(status_code=404, detail=f"Aircraft {hex_upper} not found")
+
+    details = _build_aircraft_details(hex_upper, live, db_rec)
+
+    # Attempt LLM classification if available
+    if llm_analyzer and llm_analyzer.enabled and live:
+        try:
+            llm_text = await asyncio.wait_for(
+                llm_analyzer.analyze_anomaly(hex_upper, "DETAILS_REQUEST", live),
+                timeout=10.0,
+            )
+            details["llm_analysis"] = {"description": llm_text, "confidence": None}
+        except Exception:
+            details["llm_analysis"] = {"description": "LLM analysis unavailable.", "confidence": None}
+    else:
+        details["llm_analysis"] = {"description": None, "confidence": None}
+
+    return details
+
+
+@app.get("/api/v1/aircraft/{hex_code}/position")
+async def get_aircraft_position(hex_code: str):
+    """Return the latest position snapshot for a single aircraft (lightweight)."""
+    hex_upper = hex_code.upper()
+    if not sdr_manager:
+        raise HTTPException(status_code=503, detail="SDR manager not ready")
+    live = sdr_manager.aircraft_dict.get(hex_upper)
+    if not live:
+        raise HTTPException(status_code=404, detail=f"Aircraft {hex_upper} not tracked")
+    alt_ft = live.get("altitude")
+    speed_kt = live.get("ground_speed")
+    return {
+        "icao_hex": hex_upper,
+        "latitude": live.get("latitude"),
+        "longitude": live.get("longitude"),
+        "altitude_ft": alt_ft,
+        "altitude_m": round(alt_ft * _FEET_TO_METERS) if alt_ft is not None else None,
+        "speed_kt": speed_kt,
+        "speed_kmh": round(speed_kt * 1.852) if speed_kt is not None else None,
+        "heading": live.get("track"),
+        "rssi_dbm": live.get("rssi"),
+        "timestamp": live.get("last_seen"),
+    }
+
+
+@app.post("/api/v1/aircraft/unknown/add")
+async def add_unknown_aircraft(body: dict):
+    """Add an unknown aircraft to the database.
+
+    Request body:
+        icao_hex        (required) – 6-character ICAO hex code
+        aircraft_type   – e.g. "Boeing 737-800"
+        callsign        – e.g. "SU123"
+        country         – ISO-3 or full country name
+        aircraft_class  – "Civilian Commercial", "Military", "UAV/Drone", etc.
+        description     – free-text description
+        user_notes      – operator notes
+    """
+    hex_code = (body.get("icao_hex") or "").strip().upper()
+    if not hex_code:
+        raise HTTPException(status_code=400, detail="icao_hex is required")
+    if not (len(hex_code) == 6 and all(c in "0123456789ABCDEF" for c in hex_code)):
+        raise HTTPException(status_code=400, detail="icao_hex must be exactly 6 hexadecimal characters")
+
+    aircraft_data = {
+        "hex_code": hex_code,
+        "callsign": (body.get("callsign") or "").strip() or None,
+        "aircraft_type": body.get("aircraft_type"),
+        "country": body.get("country"),
     }
 
     try:
         session = db_manager.get_sync_session()
         try:
-            from db.schema import Aircraft
-            ac = session.query(Aircraft).filter_by(hex_code=hex_code).first()
-            if ac:
-                if annotation["aircraft_type"]:
-                    ac.aircraft_type = annotation["aircraft_type"]
-                if annotation["country"]:
-                    ac.country = annotation["country"]
-                session.commit()
-            else:
-                logger.info(f"Annotation stored in memory for {hex_code} (not in DB yet)")
+            ok = db_manager.add_aircraft(session, aircraft_data)
         finally:
             session.close()
     except Exception as e:
-        logger.error(f"Annotation DB error: {e}")
+        logger.error(f"Failed to add unknown aircraft {hex_code}: {e}")
+        raise HTTPException(status_code=500, detail="Database error")
 
-    logger.info(f"✏️ Aircraft {hex_code} annotated: {annotation}")
-    return {"status": "ok", "annotation": annotation}
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save aircraft to database")
 
-
-# ---------------------------------------------------------------------------
-# Static file serving for the web/ directory
-# ---------------------------------------------------------------------------
-
-_web_dir = os.path.join(os.path.dirname(__file__), "web")
-if os.path.isdir(_web_dir):
-    app.mount("/web", StaticFiles(directory=_web_dir), name="web")
+    logger.info(f"✅ Unknown aircraft {hex_code} added to database")
+    return {
+        "success": True,
+        "message": "Aircraft added to database",
+        "hex_code": hex_code,
+    }
 
 
 if __name__ == "__main__":
     logger.info("🚀 Starting OPHIR 2.0 Server")
+    logger.info(f"📡 Observer location: {config.OBSERVER_LAT}, {config.OBSERVER_LON}")
     logger.info("📡 Listening on http://0.0.0.0:8080")
     uvicorn.run(app, host="0.0.0.0", port=8080, workers=1, log_level="info")
