@@ -110,15 +110,15 @@ def estimate_aircraft_distance(aircraft: dict) -> dict:
 
 if __name__ == "__main__":
     # Quick self-test
-    print("=== Distance Calculator Self-Test ===")
-    print(f"Observer: {config.OBSERVER_LATITUDE}°N, {config.OBSERVER_LONGITUDE}°E")
+    logging.basicConfig(level=logging.INFO)
+    logger.info("=== Distance Calculator Self-Test ===")
 
     # GPS test: aircraft over Tel Aviv
     ac_gps = {"latitude": 32.08, "longitude": 34.78}
     r = estimate_aircraft_distance(ac_gps)
-    print(f"GPS test (Tel Aviv): {r['distance_km']} km, bearing {r['bearing_deg']}° — method={r['method']}")
+    logger.info(f"GPS test: {r['distance_km']} km, bearing {r['bearing_deg']}° — method={r['method']}")
 
     # RSSI test
     ac_rssi = {"rssi": -72}
     r2 = estimate_aircraft_distance(ac_rssi)
-    print(f"RSSI test (-72 dBm): {r2['distance_km']} km — method={r2['method']}")
+    logger.info(f"RSSI test (-72 dBm): {r2['distance_km']} km — method={r2['method']}")

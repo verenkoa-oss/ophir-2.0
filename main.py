@@ -30,7 +30,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
 # Serve static web assets (CSS, JS, HTML) from /web directory
 _web_dir = Path(__file__).parent / "web"
 if _web_dir.exists():
-    from fastapi.staticfiles import StaticFiles
     app.mount("/web", StaticFiles(directory=str(_web_dir)), name="web")
 
 from core.sdr_real import SDRReader
@@ -153,7 +152,7 @@ async def _broadcast_loop():
             # Feed civilian aircraft to learning engine
             if learning_engine:
                 ac_type = (ac_copy.get("aircraft_type") or "").lower()
-                if ac_type in ("civilian", "commercial", "") or not ac_copy.get("is_shadow"):
+                if ac_type in ("civilian", "commercial", "") and not ac_copy.get("is_shadow"):
                     learning_engine.learn_from_aircraft(ac_copy)
             enriched.append(ac_copy)
 
@@ -200,8 +199,8 @@ async def _oscilloscope_loop():
             ch1 = [r.get("noise_dbm", -100) for r in noise_hist]
         # CH2: ambient noise floor (slightly below minimum signal)
         if ch1:
-            floor = min(ch1) - 5
-            ch2 = [floor + (x % 3) - 1 for x in range(len(ch1))]
+            noise_floor = min(ch1) - 5
+            ch2 = [noise_floor + (x % 3) - 1 for x in range(len(ch1))]
         else:
             ch1 = [-100] * 30
             ch2 = [-105] * 30
@@ -785,8 +784,8 @@ async def oscilloscope_data():
         noise_hist = list(sdr_manager._noise_history[-60:])
         ch1 = [r.get("noise_dbm", -100) for r in noise_hist]
     if ch1:
-        floor = min(ch1) - 5
-        ch2 = [floor + (x % 3) - 1 for x in range(len(ch1))]
+        noise_floor = min(ch1) - 5
+        ch2 = [noise_floor + (x % 3) - 1 for x in range(len(ch1))]
     else:
         ch1 = [-100] * 30
         ch2 = [-105] * 30

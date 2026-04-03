@@ -250,9 +250,9 @@
       <div class="ctrl-row">
         <span class="ctrl-label">-5 dB</span>
         <span class="ctrl-val" id="gain-label">+<span id="gain-num">45</span> dB</span>
-        <span class="ctrl-label">+40 dB</span>
+        <span class="ctrl-label">+45 dB</span>
       </div>
-      <input type="range" id="gainSlider" min="-5" max="40" value="45" step="1"
+      <input type="range" id="gainSlider" min="-5" max="45" value="45" step="1"
              oninput="onGainChange(this.value)" onchange="setGain(this.value)">
       <div style="display:flex;gap:4px;margin-top:4px;">
         <button class="toggle-btn" onclick="gainPreset(15)">+15</button>
@@ -653,7 +653,7 @@ function processAircraftData(list) {
 // AIRCRAFT LIST TAB
 // ═══════════════════════════════════════════════════════════
 function updateAircraftList(arr) {
-  const sorted = [...arr].sort((a,b) => (b.rssi||−200) - (a.rssi||−200));
+  const sorted = [...arr].sort((a,b) => (b.rssi||-200) - (a.rssi||-200));
   const container = document.getElementById('ac-list');
   container.innerHTML = '';
   for (const ac of sorted.slice(0, 50)) {

@@ -70,7 +70,7 @@ OBSERVER_LOCATION = "Middle East - Military Zone"
 
 # Gain and noise defaults
 SDR_GAIN_MIN = -5
-SDR_GAIN_MAX = 40
+SDR_GAIN_MAX = 45
 SDR_GAIN_DEFAULT = 45
 
 NOISE_THRESHOLD_DEFAULT = -75

@@ -45,7 +45,7 @@ fi
 if command -v dump1090 &>/dev/null || command -v dump1090-mutability &>/dev/null; then
     DUMP=$(command -v dump1090 || command -v dump1090-mutability)
     echo "🚀 Starting dump1090 (basic mode) …"
-    $DUMP --raw --net --net-only --quiet &
+    $DUMP --raw --net --net-only --quiet 2>>/tmp/dump1090_error.log &
     DUMP_PID=$!
     sleep 1
     echo "✅ dump1090 PID=$DUMP_PID"
