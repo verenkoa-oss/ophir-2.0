@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
 
@@ -231,12 +232,18 @@ async def get_anomalies():
 
 @app.get("/dashboard.html")
 async def get_dashboard():
-    if os.path.exists("dashboard.html"):
-        return FileResponse("dashboard.html", media_type="text/html")
-    elif os.path.exists("web/dashboard.html"):
-        return FileResponse("web/dashboard.html", media_type="text/html")
-    else:
-        raise HTTPException(status_code=404, detail="Dashboard not found")
+    for path in ["web/index.html", "dashboard.html", "web/dashboard.html", "index.html"]:
+        if os.path.exists(path):
+            return FileResponse(path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="Dashboard not found")
+
+
+@app.get("/archive.html")
+async def get_archive():
+    for path in ["web/archive.html", "archive.html"]:
+        if os.path.exists(path):
+            return FileResponse(path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="Archive not found")
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +628,12 @@ async def llm_status():
         "response_time_ms": llm_analyzer.response_time_ms,
         "last_analysis": llm_analyzer.last_analysis,
     }
+
+
+# Mount the web/ directory so index.html and archive.html are served at /web/*
+_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+if os.path.isdir(_WEB_DIR):
+    app.mount("/web", StaticFiles(directory=_WEB_DIR), name="web")
 
 
 if __name__ == "__main__":
