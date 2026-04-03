@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OPHIR 2.0 | SIGNAL INTELLIGENCE SYSTEM</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{
+  --bg:#060a1e;--panel:rgba(10,14,39,0.97);--border:rgba(0,212,255,0.22);
+  --green:#00ff41;--cyan:#00d4ff;--orange:#ff6b35;--red:#ff2244;
+  --text:#c8cfe0;--dim:#5a6080;--yellow:#ffe066;
+  --font:'Courier New',Consolas,monospace;
+}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--font);font-size:12px;}
+
+/* ── Layout ──────────────────────────────────────────── */
+#app{display:grid;grid-template-rows:44px 1fr 28px;height:100vh;}
+#hdr{display:flex;align-items:center;justify-content:space-between;padding:0 14px;
+     background:rgba(0,0,0,0.6);border-bottom:1px solid var(--border);}
+#main{display:grid;grid-template-columns:264px 1fr 310px;overflow:hidden;}
+#ftr{display:flex;align-items:center;gap:20px;padding:0 14px;
+     background:rgba(0,0,0,0.55);border-top:1px solid var(--border);font-size:11px;color:var(--dim);}
+
+/* ── Header ──────────────────────────────────────────── */
+.hdr-title{font-size:15px;font-weight:700;color:var(--green);letter-spacing:2px;}
+.hdr-coord{font-size:11px;color:var(--cyan);}
+.hdr-right{display:flex;align-items:center;gap:18px;font-size:11px;}
+.hdr-time{color:var(--yellow);font-weight:700;}
+#status-badge{padding:2px 10px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:1px;}
+.badge-on{background:var(--green);color:#000;}
+.badge-off{background:var(--red);color:#fff;}
+
+/* ── Panels ──────────────────────────────────────────── */
+.panel{background:var(--panel);border-right:1px solid var(--border);
+       display:flex;flex-direction:column;overflow:hidden;}
+.panel-hd{padding:6px 10px;font-size:10px;font-weight:700;letter-spacing:1px;
+           color:var(--cyan);border-bottom:1px solid var(--border);flex-shrink:0;}
+.panel-body{padding:10px;overflow-y:auto;flex:1;}
+
+/* ── Left panel ──────────────────────────────────────── */
+#left{gap:0;}
+.ctrl-section{border-bottom:1px solid var(--border);padding:10px;}
+.ctrl-section:last-child{border-bottom:none;}
+
+/* System ON/OFF */
+#sys-btn{width:100%;padding:10px;font-size:13px;font-weight:700;letter-spacing:1px;
+         cursor:pointer;border:2px solid var(--green);border-radius:3px;
+         background:rgba(0,255,65,0.12);color:var(--green);transition:all .2s;font-family:var(--font);}
+#sys-btn:hover{background:rgba(0,255,65,0.25);}
+#sys-btn.off{border-color:var(--red);background:rgba(255,34,68,0.12);color:var(--red);}
+.sys-stats{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;}
+.sys-stat{background:rgba(0,0,0,0.3);padding:4px 6px;border-radius:2px;}
+.ss-label{font-size:9px;color:var(--dim);display:block;}
+.ss-val{font-size:12px;font-weight:700;color:var(--cyan);}
+
+/* Sliders */
+.ctrl-label{font-size:10px;color:var(--dim);margin-bottom:4px;display:block;}
+.ctrl-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.ctrl-val{font-size:13px;font-weight:700;color:var(--green);min-width:54px;text-align:right;}
+input[type=range]{-webkit-appearance:none;flex:1;height:4px;border-radius:2px;outline:none;cursor:pointer;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;cursor:pointer;}
+#gain-slider{background:linear-gradient(to right,var(--cyan) 0%,var(--cyan) 50%,#1a2040 50%);}
+#gain-slider::-webkit-slider-thumb{background:var(--cyan);border:2px solid #fff;}
+#noise-slider{background:linear-gradient(to right,var(--orange) 0%,var(--orange) 50%,#1a2040 50%);}
+#noise-slider::-webkit-slider-thumb{background:var(--orange);border:2px solid #fff;}
+.btn-sm{padding:3px 8px;font-size:10px;cursor:pointer;border:1px solid;border-radius:2px;
+        background:transparent;font-family:var(--font);transition:all .15s;}
+.btn-cyan{border-color:var(--cyan);color:var(--cyan);}
+.btn-cyan:hover{background:rgba(0,212,255,0.15);}
+.btn-dim{border-color:var(--dim);color:var(--dim);}
+.btn-dim:hover{background:rgba(90,96,128,0.2);}
+.chk-row{display:flex;align-items:center;gap:6px;margin:4px 0;cursor:pointer;}
+.chk-row input{accent-color:var(--green);}
+.chk-row label{cursor:pointer;font-size:11px;}
+.noise-info{display:flex;justify-content:space-between;margin-top:6px;padding:5px 7px;
+            background:rgba(0,0,0,0.3);border-radius:2px;}
+.ni-label{font-size:10px;color:var(--dim);}
+.ni-val{font-size:11px;color:var(--orange);font-weight:700;}
+
+/* ── Center panel ────────────────────────────────────── */
+#center{border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
+#map-wrap{flex:0 0 42%;position:relative;border-bottom:1px solid var(--border);}
+#map-div{width:100%;height:100%;}
+#osc-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:8px;}
+.osc-hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+.osc-title{font-size:11px;font-weight:700;color:var(--cyan);letter-spacing:1px;}
+.osc-zoom{display:flex;gap:4px;}
+#osc-canvas-wrap{flex:1;position:relative;min-height:0;}
+.osc-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;flex-shrink:0;}
+.osc-ch{background:rgba(0,0,0,0.3);padding:5px 8px;border-radius:2px;}
+.osc-ch-title{font-size:9px;font-weight:700;letter-spacing:1px;margin-bottom:3px;}
+.ch1-color{color:var(--green);}
+.ch2-color{color:var(--orange);}
+.osc-ch-stats{display:flex;gap:12px;}
+.osc-ch-stat{font-size:10px;}
+.osc-ch-stat span{font-weight:700;}
+
+/* ── Right panel ─────────────────────────────────────── */
+#right{display:flex;flex-direction:column;overflow:hidden;}
+.tab-bar{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
+.tab-btn{flex:1;padding:7px 4px;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.5px;
+         background:transparent;border:none;color:var(--dim);font-family:var(--font);
+         border-right:1px solid var(--border);transition:all .15s;}
+.tab-btn:last-child{border-right:none;}
+.tab-btn.active{color:var(--cyan);background:rgba(0,212,255,0.08);border-bottom:2px solid var(--cyan);}
+.tab-btn:hover:not(.active){color:var(--text);background:rgba(255,255,255,0.04);}
+.tab-content{flex:1;overflow:hidden;display:none;}
+.tab-content.active{display:flex;flex-direction:column;}
+
+/* Aircraft card */
+#tab-aircraft{padding:10px;overflow-y:auto;}
+.ac-card{background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:3px;padding:10px;margin-bottom:8px;}
+.ac-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;}
+.ac-callsign{font-size:18px;font-weight:700;color:var(--green);}
+.ac-class-badge{padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:1px;}
+.class-mil{background:rgba(255,107,53,0.25);color:var(--orange);border:1px solid var(--orange);}
+.class-civ{background:rgba(0,255,65,0.12);color:var(--green);border:1px solid var(--green);}
+.class-uav{background:rgba(0,212,255,0.15);color:var(--cyan);border:1px solid var(--cyan);}
+.class-unk{background:rgba(90,96,128,0.2);color:var(--dim);border:1px solid var(--dim);}
+.ac-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;}
+.ac-field{background:rgba(0,0,0,0.25);padding:4px 7px;border-radius:2px;}
+.ac-field-label{font-size:9px;color:var(--dim);display:block;}
+.ac-field-val{font-size:12px;font-weight:700;color:var(--text);}
+.ac-country{display:flex;align-items:center;gap:6px;margin:6px 0;}
+.ac-flag{font-size:22px;}
+.ac-country-name{font-size:12px;color:var(--cyan);}
+.ac-type-row{display:flex;align-items:center;gap:8px;margin-top:6px;padding:5px 7px;
+             background:rgba(0,212,255,0.06);border-radius:2px;}
+.ac-type-icon{font-size:18px;}
+.ac-type-name{font-size:12px;font-weight:700;color:var(--cyan);}
+#btn-annotate{width:100%;margin-top:8px;padding:6px;cursor:pointer;
+              border:1px solid var(--yellow);background:rgba(255,224,102,0.08);
+              color:var(--yellow);font-family:var(--font);font-size:11px;border-radius:2px;}
+#btn-annotate:hover{background:rgba(255,224,102,0.18);}
+.no-aircraft{text-align:center;color:var(--dim);padding:30px 10px;font-size:11px;}
+
+/* Live table (aircraft list) */
+#ac-list-wrap{flex:1;overflow-y:auto;border-top:1px solid var(--border);}
+.ac-list-table{width:100%;border-collapse:collapse;font-size:11px;}
+.ac-list-table th{background:rgba(0,0,0,0.5);color:var(--dim);padding:5px 6px;text-align:left;position:sticky;top:0;}
+.ac-list-table td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.04);}
+.ac-list-table tr{cursor:pointer;}
+.ac-list-table tr:hover td{background:rgba(0,212,255,0.07);}
+.ac-list-table tr.selected td{background:rgba(0,212,255,0.13);}
+.ac-mil td{color:var(--orange);}
+.ac-shadow td{color:var(--dim);}
+
+/* Analysis tab */
+#tab-analysis{padding:10px;overflow-y:auto;}
+.analysis-block{background:rgba(0,0,0,0.3);border:1px solid var(--border);border-radius:3px;
+                padding:8px;margin-bottom:8px;}
+.analysis-title{font-size:10px;font-weight:700;color:var(--cyan);letter-spacing:1px;margin-bottom:6px;}
+.sig-type-badge{display:inline-block;padding:3px 10px;border-radius:2px;font-size:11px;font-weight:700;}
+.sig-normal{background:rgba(0,255,65,0.15);color:var(--green);border:1px solid var(--green);}
+.sig-strong{background:rgba(255,224,102,0.15);color:var(--yellow);border:1px solid var(--yellow);}
+.sig-weak{background:rgba(90,96,128,0.2);color:var(--dim);border:1px solid var(--dim);}
+.sig-alert{background:rgba(255,34,68,0.2);color:var(--red);border:1px solid var(--red);}
+.analysis-row{display:flex;justify-content:space-between;padding:3px 0;
+              border-bottom:1px solid rgba(255,255,255,0.05);}
+.analysis-row:last-child{border-bottom:none;}
+.ar-key{color:var(--dim);font-size:10px;}
+.ar-val{font-weight:700;font-size:11px;}
+.llm-text{font-size:11px;line-height:1.6;color:var(--text);white-space:pre-wrap;}
+
+/* Records tab */
+#tab-records{display:flex;flex-direction:column;overflow:hidden;}
+.rec-bar{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
+.rec-tab{flex:1;padding:5px 4px;font-size:9px;font-weight:700;letter-spacing:.5px;cursor:pointer;
+         background:transparent;border:none;color:var(--dim);font-family:var(--font);
+         border-right:1px solid var(--border);}
+.rec-tab:last-child{border-right:none;}
+.rec-tab.active{color:var(--yellow);background:rgba(255,224,102,0.07);}
+.rec-table-wrap{flex:1;overflow-y:auto;}
+.rec-table{width:100%;border-collapse:collapse;font-size:10px;}
+.rec-table th{background:rgba(0,0,0,0.5);color:var(--dim);padding:5px 5px;text-align:left;position:sticky;top:0;}
+.rec-table td{padding:4px 5px;border-bottom:1px solid rgba(255,255,255,0.04);}
+.rec-table tr:hover td{background:rgba(255,224,102,0.06);}
+.rec-gold{color:var(--yellow);font-weight:700;}
+
+/* Unknown aircraft tab */
+#tab-unknown{padding:10px;overflow-y:auto;}
+.unk-form label{display:block;font-size:10px;color:var(--dim);margin-bottom:3px;margin-top:8px;}
+.unk-form input,.unk-form select,.unk-form textarea{
+  width:100%;padding:5px 7px;background:rgba(0,0,0,0.4);border:1px solid var(--border);
+  color:var(--text);font-family:var(--font);font-size:11px;border-radius:2px;}
+.unk-form textarea{resize:vertical;height:60px;}
+.unk-form select option{background:#060a1e;}
+#unk-submit{width:100%;margin-top:12px;padding:7px;cursor:pointer;border:1px solid var(--green);
+            background:rgba(0,255,65,0.1);color:var(--green);font-family:var(--font);
+            font-size:12px;font-weight:700;border-radius:2px;}
+#unk-submit:hover{background:rgba(0,255,65,0.22);}
+#unk-msg{margin-top:8px;font-size:11px;text-align:center;}
+
+/* Footer */
+.ftr-item{display:flex;align-items:center;gap:5px;}
+.ftr-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.dot-ok{background:var(--green);}
+.dot-warn{background:var(--yellow);}
+.dot-err{background:var(--red);}
+.dot-off{background:var(--dim);}
+
+/* Modal */
+#modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9000;
+          align-items:center;justify-content:center;}
+#modal-bg.open{display:flex;}
+#modal{background:#0d1230;border:1px solid var(--cyan);border-radius:4px;
+       padding:20px;width:380px;max-width:95vw;}
+#modal h3{color:var(--cyan);margin-bottom:12px;font-size:14px;letter-spacing:1px;}
+#modal-close{float:right;background:none;border:none;color:var(--dim);cursor:pointer;font-size:16px;}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:rgba(0,212,255,0.25);border-radius:3px;}
+
+/* Leaflet overrides */
+.leaflet-container{background:#edf2f7 !important;}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ═══ HEADER ═══════════════════════════════════════════════════════════ -->
+<header id="hdr">
+  <div>
+    <div class="hdr-title">◈ OPHIR 2.0 — SIGNAL INTELLIGENCE SYSTEM</div>
+    <div class="hdr-coord">Observer: 31.073541°N, 35.037383°E &nbsp;|&nbsp; 1090 MHz ADS-B</div>
+  </div>
+  <div class="hdr-right">
+    <span class="hdr-time" id="hdr-time">--:--:--</span>
+    <span id="status-badge" class="badge-on">● OPERATIONAL</span>
+  </div>
+</header>
+
+<!-- ═══ MAIN ══════════════════════════════════════════════════════════════ -->
+<div id="main">
+
+  <!-- ── LEFT PANEL ───────────────────────────────────────────────────── -->
+  <div class="panel" id="left">
+
+    <!-- System ON/OFF -->
+    <div class="ctrl-section">
+      <div class="panel-hd">🔴 SYSTEM CONTROL</div>
+      <button id="sys-btn" onclick="toggleSystem()">● SYSTEM ON</button>
+      <div class="sys-stats">
+        <div class="sys-stat"><span class="ss-label">UPTIME</span><span class="ss-val" id="uptime-val">00:00:00</span></div>
+        <div class="sys-stat"><span class="ss-label">AIRCRAFT</span><span class="ss-val" id="ac-count-val">0</span></div>
+        <div class="sys-stat"><span class="ss-label">SIGNALS</span><span class="ss-val" id="sig-count-val">0</span></div>
+        <div class="sys-stat"><span class="ss-label">ERRORS</span><span class="ss-val" id="err-count-val">0</span></div>
+      </div>
+    </div>
+
+    <!-- Gain Control -->
+    <div class="ctrl-section">
+      <div class="panel-hd">🎚️ GAIN CONTROL</div>
+      <span class="ctrl-label">Signal Gain: <b>-5 dB → +40 dB</b></span>
+      <div class="ctrl-row">
+        <input type="range" id="gain-slider" min="-5" max="40" step="1" value="40" oninput="onGainInput(this.value)">
+        <span class="ctrl-val" id="gain-val">+40 dB</span>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button class="btn-sm btn-cyan" onclick="saveGain()">💾 Save</button>
+        <button class="btn-sm btn-dim" onclick="resetGain()">↺ Default</button>
+      </div>
+    </div>
+
+    <!-- Noise Control -->
+    <div class="ctrl-section">
+      <div class="panel-hd">🔊 NOISE CONTROL</div>
+      <span class="ctrl-label">Noise Threshold</span>
+      <div class="ctrl-row">
+        <input type="range" id="noise-slider" min="-120" max="-20" step="1" value="-75" oninput="onNoiseInput(this.value)">
+        <span class="ctrl-val" id="noise-val">-75 dBm</span>
+      </div>
+      <div class="chk-row">
+        <input type="checkbox" id="chk-filter" checked onchange="applyNoiseSettings()">
+        <label for="chk-filter">Apply Noise Filter</label>
+      </div>
+      <div class="chk-row">
+        <input type="checkbox" id="chk-events" checked onchange="applyNoiseSettings()">
+        <label for="chk-events">Show Noise Events</label>
+      </div>
+      <div class="chk-row">
+        <input type="checkbox" id="chk-alert" checked onchange="applyNoiseSettings()">
+        <label for="chk-alert">Alert on Spike</label>
+      </div>
+      <div class="noise-info">
+        <div><span class="ni-label">Current Noise</span><div class="ni-val" id="curr-noise-val">-- dBm</div></div>
+        <div style="text-align:right"><span class="ni-label">Events (5min)</span><div class="ni-val" id="noise-events-val">0</div></div>
+      </div>
+    </div>
+
+    <!-- Antenna / LLM -->
+    <div class="ctrl-section" style="flex:1;">
+      <div class="panel-hd">📡 SYSTEM MODULES</div>
+      <div style="display:flex;flex-direction:column;gap:6px;padding-top:4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:10px;color:var(--dim)">ANTENNA MODE</span>
+          <select id="antenna-select" onchange="switchAntenna(this.value)"
+                  style="background:rgba(0,0,0,0.4);border:1px solid var(--border);color:var(--text);
+                         font-family:var(--font);font-size:10px;padding:2px 4px;">
+            <option value="AIR">AIR</option>
+            <option value="GARAGE">GARAGE</option>
+          </select>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:10px;color:var(--dim)">LLM ANALYSIS</span>
+          <button class="btn-sm btn-cyan" id="llm-toggle-btn" onclick="toggleLLM()">ON</button>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:10px;color:var(--dim)">dump1090</span>
+          <div style="display:flex;gap:4px;">
+            <button class="btn-sm btn-dim" onclick="dump1090Action('restart')">↺</button>
+            <button class="btn-sm btn-dim" id="dump-btn" onclick="toggleDump1090()">STOP</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /left -->
+
+  <!-- ── CENTER PANEL ─────────────────────────────────────────────────── -->
+  <div id="center">
+    <!-- Map -->
+    <div id="map-wrap">
+      <div id="map-div"></div>
+    </div>
+    <!-- Oscilloscope -->
+    <div id="osc-wrap">
+      <div class="osc-hd">
+        <span class="osc-title">📊 OSCILLOSCOPE — REAL-TIME RF MONITOR</span>
+        <div class="osc-zoom">
+          <button class="btn-sm btn-dim" onclick="zoomOsc(-1)">−</button>
+          <button class="btn-sm btn-dim" onclick="zoomOsc(1)">+</button>
+          <button class="btn-sm btn-dim" onclick="resetOscZoom()">⊡</button>
+        </div>
+      </div>
+      <div id="osc-canvas-wrap">
+        <canvas id="osc-canvas"></canvas>
+      </div>
+      <div class="osc-stats">
+        <div class="osc-ch">
+          <div class="osc-ch-title ch1-color">CH1 · ADS-B SIGNALS</div>
+          <div class="osc-ch-stats">
+            <div class="osc-ch-stat">Max: <span id="ch1-max" class="ch1-color">--</span></div>
+            <div class="osc-ch-stat">Min: <span id="ch1-min" class="ch1-color">--</span></div>
+            <div class="osc-ch-stat">Avg: <span id="ch1-avg" class="ch1-color">--</span></div>
+          </div>
+        </div>
+        <div class="osc-ch">
+          <div class="osc-ch-title ch2-color">CH2 · RF NOISE FLOOR</div>
+          <div class="osc-ch-stats">
+            <div class="osc-ch-stat">Max: <span id="ch2-max" class="ch2-color">--</span></div>
+            <div class="osc-ch-stat">Min: <span id="ch2-min" class="ch2-color">--</span></div>
+            <div class="osc-ch-stat">Avg: <span id="ch2-avg" class="ch2-color">--</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /center -->
+
+  <!-- ── RIGHT PANEL ──────────────────────────────────────────────────── -->
+  <div id="right" class="panel" style="border-right:none;">
+
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="showTab(this,'aircraft','tab-aircraft')">✈ AIRCRAFT</button>
+      <button class="tab-btn" onclick="showTab(this,'analysis','tab-analysis')">🔬 ANALYSIS</button>
+      <button class="tab-btn" onclick="showTab(this,'records','tab-records')">🏆 RECORDS</button>
+      <button class="tab-btn" onclick="showTab(this,'unknown','tab-unknown')">✏ UNKNOWN</button>
+    </div>
+
+    <!-- Aircraft Tab -->
+    <div id="tab-aircraft" class="tab-content active" style="flex-direction:column;overflow:hidden;">
+      <div id="ac-detail" style="flex-shrink:0;max-height:45%;overflow-y:auto;border-bottom:1px solid var(--border);">
+        <div class="no-aircraft" id="ac-placeholder">▸ Select an aircraft from the list below</div>
+        <div id="ac-card" style="display:none;padding:10px;"></div>
+      </div>
+      <div id="ac-list-wrap">
+        <table class="ac-list-table">
+          <thead><tr><th>HEX</th><th>CALLSIGN</th><th>ALT</th><th>SPD</th><th>SIG</th></tr></thead>
+          <tbody id="ac-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Analysis Tab -->
+    <div id="tab-analysis" class="tab-content" style="overflow-y:auto;padding:10px;">
+      <div class="analysis-block">
+        <div class="analysis-title">SIGNAL ENVIRONMENT</div>
+        <div class="analysis-row"><span class="ar-key">Signal Type</span><span class="ar-val" id="an-sig-type">--</span></div>
+        <div class="analysis-row"><span class="ar-key">Confidence</span><span class="ar-val" id="an-confidence">--</span></div>
+        <div class="analysis-row"><span class="ar-key">Noise Floor</span><span class="ar-val" id="an-noise">-- dBm</span></div>
+        <div class="analysis-row"><span class="ar-key">Antenna Mode</span><span class="ar-val" id="an-antenna">--</span></div>
+      </div>
+      <div class="analysis-block">
+        <div class="analysis-title">LLM CLASSIFICATION</div>
+        <div id="an-llm-class" style="margin-bottom:6px;"></div>
+        <div id="an-llm-text" class="llm-text" style="font-size:10px;color:var(--dim);">Awaiting LLM analysis…</div>
+      </div>
+      <div class="analysis-block">
+        <div class="analysis-title">THREAT STATUS</div>
+        <div class="analysis-row"><span class="ar-key">Status</span><span class="ar-val" id="an-threat">NORMAL</span></div>
+        <div class="analysis-row"><span class="ar-key">Anomalies</span><span class="ar-val" id="an-anomaly">0</span></div>
+        <div class="analysis-row"><span class="ar-key">LLM Active</span><span class="ar-val" id="an-llm-active">--</span></div>
+      </div>
+    </div>
+
+    <!-- Records Tab -->
+    <div id="tab-records" class="tab-content" style="overflow:hidden;">
+      <div class="rec-bar">
+        <button class="rec-tab active" onclick="showRec(this,'alt')">▲ ALT</button>
+        <button class="rec-tab" onclick="showRec(this,'spd')">⚡ SPD</button>
+        <button class="rec-tab" onclick="showRec(this,'sig')">📶 SIGNAL</button>
+        <button class="rec-tab" onclick="showRec(this,'unique')">★ UNIQUE</button>
+      </div>
+      <div class="rec-table-wrap">
+        <table class="rec-table">
+          <thead><tr id="rec-thead-row"></tr></thead>
+          <tbody id="rec-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Unknown Aircraft Tab -->
+    <div id="tab-unknown" class="tab-content" style="overflow-y:auto;">
+      <div style="font-size:10px;color:var(--dim);margin-bottom:8px;">
+        Register an unidentified aircraft in the database.
+      </div>
+      <div class="unk-form">
+        <label>HEX Code</label>
+        <input type="text" id="unk-hex" placeholder="e.g. 3C6444" maxlength="8">
+        <label>Aircraft Type</label>
+        <input type="text" id="unk-type" placeholder="e.g. Boeing 737, C-130, Unknown UAV">
+        <label>Class</label>
+        <select id="unk-class">
+          <option value="CIVILIAN">✈ CIVILIAN</option>
+          <option value="MILITARY">⚔ MILITARY</option>
+          <option value="UAV">🚁 UAV / DRONE</option>
+          <option value="UNKNOWN">❓ UNKNOWN</option>
+        </select>
+        <label>Country</label>
+        <input type="text" id="unk-country" placeholder="e.g. Israel, USA">
+        <label>Notes</label>
+        <textarea id="unk-notes" placeholder="Additional observations, flight pattern, signal characteristics…"></textarea>
+        <button id="unk-submit" onclick="submitAnnotation()">▶ SAVE TO DATABASE</button>
+        <div id="unk-msg"></div>
+      </div>
+    </div>
+
+  </div><!-- /right -->
+</div><!-- /main -->
+
+<!-- ═══ FOOTER ════════════════════════════════════════════════════════════ -->
+<footer id="ftr">
+  <div class="ftr-item"><div class="ftr-dot" id="dot-sys"></div><span id="ftr-sys">SYSTEM: --</span></div>
+  <div class="ftr-item"><div class="ftr-dot" id="dot-api"></div><span id="ftr-api">API: --</span></div>
+  <div class="ftr-item"><div class="ftr-dot" id="dot-ws"></div><span id="ftr-ws">WS: --</span></div>
+  <div class="ftr-item"><div class="ftr-dot" id="dot-dump"></div><span id="ftr-dump">dump1090: --</span></div>
+  <div class="ftr-item"><div class="ftr-dot" id="dot-llm"></div><span id="ftr-llm">LLM: --</span></div>
+  <div style="margin-left:auto;color:var(--dim);font-size:10px;" id="ftr-ts">--</div>
+</footer>
+
+</div><!-- /app -->
+
+<!-- ═══ MODAL (unknown aircraft) ════════════════════════════════════════ -->
+<div id="modal-bg">
+  <div id="modal">
+    <button id="modal-close" onclick="closeModal()">✕</button>
+    <h3>✏ ANNOTATE AIRCRAFT</h3>
+    <div class="unk-form">
+      <label>HEX Code</label>
+      <input type="text" id="modal-hex" readonly>
+      <label>Aircraft Type</label>
+      <input type="text" id="modal-type" placeholder="Boeing 737, C-130, Unknown UAV…">
+      <label>Class</label>
+      <select id="modal-class">
+        <option value="CIVILIAN">✈ CIVILIAN</option>
+        <option value="MILITARY">⚔ MILITARY</option>
+        <option value="UAV">🚁 UAV / DRONE</option>
+        <option value="UNKNOWN">❓ UNKNOWN</option>
+      </select>
+      <label>Country</label>
+      <input type="text" id="modal-country">
+      <label>Notes</label>
+      <textarea id="modal-notes" style="height:50px;"></textarea>
+      <button id="unk-submit" onclick="submitModalAnnotation()"
+              style="width:100%;margin-top:10px;padding:7px;cursor:pointer;
+                     border:1px solid var(--green);background:rgba(0,255,65,0.1);
+                     color:var(--green);font-family:var(--font);font-size:12px;
+                     font-weight:700;border-radius:2px;">▶ SAVE</button>
+      <div id="modal-msg" style="margin-top:6px;font-size:11px;text-align:center;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ JAVASCRIPT ════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const BASE      = window.location.origin;
+const WS_PROTO  = location.protocol === 'https:' ? 'wss' : 'ws';
+const WS_HOST   = location.host;
+const OBS_LAT   = 31.073541;
+const OBS_LON   = 35.037383;
+const DEFAULT_GAIN = 40;
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let aircraftData   = {};       // hex -> ac object
+let selectedHex    = null;
+let systemUptime   = 0;        // seconds (from API)
+let wsOsc          = null;
+let wsAircraft     = null;
+let wsRetryOsc     = 0;
+let wsRetryAc      = 0;
+let oscChart       = null;
+let leafletMap     = null;
+let markers        = {};       // hex -> L.marker
+let recMode        = 'alt';
+let oscYMin        = -120;
+let oscYMax        = -20;
+
+// ─── Flags for country → emoji ───────────────────────────────────────────────
+const FLAGS = {
+  IL:'🇮🇱',US:'🇺🇸',GB:'🇬🇧',RU:'🇷🇺',DE:'🇩🇪',FR:'🇫🇷',
+  CN:'🇨🇳',JO:'🇯🇴',EG:'🇪🇬',SA:'🇸🇦',TR:'🇹🇷',LB:'🇱🇧',
+  SY:'🇸🇾',IQ:'🇮🇶',IR:'🇮🇷',IT:'🇮🇹',ES:'🇪🇸',NL:'🇳🇱',
+  UA:'🇺🇦',PL:'🇵🇱',GR:'🇬🇷',CY:'🇨🇾',AE:'🇦🇪',QA:'🇶🇦',KW:'🇰🇼',
+};
+function countryFlag(country) {
+  if (!country) return '🌐';
+  const up = country.toUpperCase();
+  for (const [k,v] of Object.entries(FLAGS)) {
+    if (up.includes(k) || up.includes(countryName(k).toUpperCase())) return v;
+  }
+  return '🌐';
+}
+function countryName(code) {
+  const map = {IL:'Israel',US:'United States',GB:'United Kingdom',RU:'Russia',
+    JO:'Jordan',EG:'Egypt',SA:'Saudi Arabia',TR:'Turkey',LB:'Lebanon',SY:'Syria',
+    IQ:'Iraq',IR:'Iran',AE:'UAE',QA:'Qatar'};
+  return map[code] || code;
+}
+
+// ─── Aircraft classification ──────────────────────────────────────────────────
+function classifyAc(ac) {
+  const cs = (ac.callsign || '').toUpperCase().trim();
+  const hex = (ac.hex_code || '').toUpperCase();
+  const type = (ac.aircraft_type || '').toUpperCase();
+
+  if (type.includes('MILITARY') || type.includes('MIL') ||
+      /^(IAF|AMOS|WIND|MAGNUS|RCH|AUI|REACH|HAVOC|AF[0-9]|USAF)/.test(cs))
+    return {cls:'MILITARY', icon:'⚔', label:'class-mil'};
+  if (type.includes('UAV') || type.includes('DRONE') || type.includes('RQ-') ||
+      type.includes('MQ-') || cs.includes('UAV'))
+    return {cls:'UAV', icon:'🚁', label:'class-uav'};
+  if (!cs || cs === '????????' || cs.length < 2)
+    return {cls:'SHADOW', icon:'👻', label:'class-unk'};
+  if (/^[A-Z]{2,3}[0-9]/.test(cs))
+    return {cls:'CIVILIAN', icon:'✈', label:'class-civ'};
+  return {cls:'UNKNOWN', icon:'❓', label:'class-unk'};
+}
+
+function aircraftTypeName(ac) {
+  const t = ac.aircraft_type || '';
+  if (t) return t;
+  const {cls} = classifyAc(ac);
+  if (cls === 'MILITARY') return 'Military Aircraft';
+  if (cls === 'UAV') return 'Unmanned Aerial Vehicle';
+  if (cls === 'CIVILIAN') return 'Commercial Aircraft';
+  return 'Unidentified';
+}
+
+function fmtVal(v, unit='', decimals=0) {
+  if (v === null || v === undefined) return '--';
+  const n = parseFloat(v);
+  if (isNaN(n)) return '--';
+  return n.toFixed(decimals) + unit;
+}
+
+// ─── Clock ────────────────────────────────────────────────────────────────────
+function tickClock() {
+  const now = new Date();
+  document.getElementById('hdr-time').textContent =
+    now.toUTCString().slice(17,25) + ' UTC';
+  document.getElementById('ftr-ts').textContent = now.toISOString().slice(0,19).replace('T',' ') + ' Z';
+}
+setInterval(tickClock, 1000); tickClock();
+
+// ─── Uptime display ───────────────────────────────────────────────────────────
+function fmtUptime(s) {
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60;
+  return [h,m,ss].map(x=>String(x).padStart(2,'0')).join(':');
+}
+
+// ─── Map setup ────────────────────────────────────────────────────────────────
+function initMap() {
+  leafletMap = L.map('map-div', {zoomControl:true, attributionControl:false})
+    .setView([OBS_LAT, OBS_LON], 8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:18, attribution:'© OpenStreetMap'
+  }).addTo(leafletMap);
+  // Observer marker
+  L.marker([OBS_LAT, OBS_LON], {
+    icon: L.divIcon({
+      html:`<div style="color:#00ff41;font-size:22px;text-shadow:0 0 6px #00ff41">📡</div>`,
+      className:'', iconAnchor:[11,22]
+    })
+  }).addTo(leafletMap).bindPopup(`<b>OBSERVER</b><br>${OBS_LAT}°N, ${OBS_LON}°E`);
+}
+
+function updateMapMarkers() {
+  const all = Object.values(aircraftData);
+  const seen = new Set();
+
+  all.forEach(ac => {
+    const hex = ac.hex_code;
+    if (!hex) return;
+    seen.add(hex);
+    const lat = ac.latitude, lon = ac.longitude;
+    if (!lat || !lon) return;
+
+    const {cls, icon} = classifyAc(ac);
+    const color = cls === 'MILITARY' ? '#ff6b35' : cls === 'UAV' ? '#00d4ff' : '#00ff41';
+    const html = `<div style="color:${color};font-size:18px;text-shadow:0 0 4px ${color}">${icon}</div>`;
+    const divIcon = L.divIcon({html, className:'', iconAnchor:[9,9]});
+
+    if (markers[hex]) {
+      markers[hex].setLatLng([lat, lon]);
+      markers[hex].setIcon(divIcon);
+    } else {
+      const m = L.marker([lat, lon], {icon: divIcon}).addTo(leafletMap);
+      m.bindTooltip(`${ac.callsign || hex} | ${fmtVal(ac.altitude,'ft')} | ${fmtVal(ac.ground_speed,'kt')}`);
+      m.on('click', () => selectAircraft(hex));
+      markers[hex] = m;
+    }
+    if (markers[hex]) {
+      markers[hex].getTooltip() &&
+        markers[hex].setTooltipContent(
+          `${ac.callsign || hex} | ${fmtVal(ac.altitude,'ft')} | ${fmtVal(ac.ground_speed,'kt')}`
+        );
+    }
+  });
+
+  // Remove stale markers
+  Object.keys(markers).forEach(hex => {
+    if (!seen.has(hex)) {
+      leafletMap.removeLayer(markers[hex]);
+      delete markers[hex];
+    }
+  });
+}
+
+// ─── Oscilloscope (Chart.js) ──────────────────────────────────────────────────
+function initOscilloscope() {
+  const ctx = document.getElementById('osc-canvas').getContext('2d');
+  const labels = Array.from({length:60}, (_,i) => i % 10 === 0 ? `-${60-i}s` : '');
+  oscChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'CH1: ADS-B',
+          data: new Array(60).fill(null),
+          borderColor: '#00ff41',
+          backgroundColor: 'rgba(0,255,65,0.07)',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.35,
+          spanGaps: true,
+        },
+        {
+          label: 'CH2: RF Noise',
+          data: new Array(60).fill(null),
+          borderColor: '#ff6b35',
+          backgroundColor: 'rgba(255,107,53,0.05)',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.35,
+          spanGaps: true,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: {mode:'index', intersect:false},
+      scales: {
+        x: {
+          grid: {color:'rgba(0,212,255,0.08)', drawBorder:false},
+          ticks: {color:'#3a4060', font:{size:9}, maxRotation:0}
+        },
+        y: {
+          min: oscYMin, max: oscYMax,
+          grid: {color:'rgba(0,212,255,0.08)', drawBorder:false},
+          ticks: {color:'#3a4060', font:{size:9}, callback: v => v+'dBm'}
+        }
+      },
+      plugins: {
+        legend: {labels:{color:'#8090b0', font:{size:10}, boxWidth:12, padding:12}},
+        tooltip: {
+          backgroundColor:'rgba(6,10,30,0.92)',
+          titleColor:'#00d4ff', bodyColor:'#c8cfe0',
+          borderColor:'rgba(0,212,255,0.3)', borderWidth:1,
+        }
+      }
+    }
+  });
+}
+
+function updateOscilloscope(ch1, ch2, ch1Stats, ch2Stats) {
+  if (!oscChart) return;
+  // Pad/trim to 60 points
+  const pad = arr => {
+    const a = (arr || []).slice(-60);
+    while (a.length < 60) a.unshift(null);
+    return a;
+  };
+  oscChart.data.datasets[0].data = pad(ch1);
+  oscChart.data.datasets[1].data = pad(ch2);
+  oscChart.update('none');
+
+  const fmt = v => v != null ? v + ' dBm' : '--';
+  if (ch1Stats) {
+    document.getElementById('ch1-max').textContent = fmt(ch1Stats.max);
+    document.getElementById('ch1-min').textContent = fmt(ch1Stats.min);
+    document.getElementById('ch1-avg').textContent = fmt(ch1Stats.avg);
+  }
+  if (ch2Stats) {
+    document.getElementById('ch2-max').textContent = fmt(ch2Stats.max);
+    document.getElementById('ch2-min').textContent = fmt(ch2Stats.min);
+    document.getElementById('ch2-avg').textContent = fmt(ch2Stats.avg);
+  }
+}
+
+function zoomOsc(dir) {
+  const range = oscYMax - oscYMin;
+  const step = Math.max(5, range * 0.1);
+  if (dir > 0) { oscYMin += step; oscYMax -= step; }
+  else { oscYMin -= step; oscYMax += step; }
+  oscYMin = Math.min(oscYMin, oscYMax - 10);
+  oscChart.options.scales.y.min = oscYMin;
+  oscChart.options.scales.y.max = oscYMax;
+  oscChart.update('none');
+}
+function resetOscZoom() {
+  oscYMin = -120; oscYMax = -20;
+  oscChart.options.scales.y.min = oscYMin;
+  oscChart.options.scales.y.max = oscYMax;
+  oscChart.update('none');
+}
+
+// ─── WebSocket: Oscilloscope ──────────────────────────────────────────────────
+function connectOscWS() {
+  if (wsOsc && wsOsc.readyState < 2) return;
+  wsOsc = new WebSocket(`${WS_PROTO}://${WS_HOST}/ws/oscilloscope`);
+  wsOsc.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      updateOscilloscope(d.ch1, d.ch2, d.ch1_stats, d.ch2_stats);
+    } catch(_) {}
+  };
+  wsOsc.onopen  = () => { setDot('dot-ws','ok'); setTxt('ftr-ws','WS: OK'); wsRetryOsc = 0; };
+  wsOsc.onclose = () => {
+    setDot('dot-ws','err'); setTxt('ftr-ws','WS: RECONNECTING…');
+    wsRetryOsc = Math.min(wsRetryOsc + 1, 8);
+    setTimeout(connectOscWS, Math.min(1000 * wsRetryOsc, 15000));
+  };
+  wsOsc.onerror = () => wsOsc.close();
+}
+
+// ─── WebSocket: Aircraft ──────────────────────────────────────────────────────
+function connectAircraftWS() {
+  if (wsAircraft && wsAircraft.readyState < 2) return;
+  wsAircraft = new WebSocket(`${WS_PROTO}://${WS_HOST}/api/v1/live/aircraft`);
+  wsAircraft.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      const list = d.aircraft || [];
+      list.forEach(ac => {
+        if (ac.hex_code) aircraftData[ac.hex_code] = ac;
+      });
+      renderAircraftList();
+      updateMapMarkers();
+      document.getElementById('ac-count-val').textContent = list.length;
+    } catch(_) {}
+  };
+  wsAircraft.onopen  = () => { wsRetryAc = 0; };
+  wsAircraft.onclose = () => {
+    wsRetryAc = Math.min(wsRetryAc + 1, 8);
+    setTimeout(connectAircraftWS, Math.min(1000 * wsRetryAc, 15000));
+  };
+  wsAircraft.onerror = () => wsAircraft.close();
+}
+
+// ─── Aircraft list rendering ──────────────────────────────────────────────────
+function renderAircraftList() {
+  const tbody = document.getElementById('ac-tbody');
+  const acs = Object.values(aircraftData)
+    .sort((a,b) => (b.rssi||0) - (a.rssi||0));
+  tbody.innerHTML = '';
+  acs.forEach(ac => {
+    const {cls} = classifyAc(ac);
+    const tr = document.createElement('tr');
+    if (cls === 'MILITARY') tr.className = 'ac-mil';
+    else if (cls === 'SHADOW') tr.className = 'ac-shadow';
+    if (ac.hex_code === selectedHex) tr.className += ' selected';
+    tr.innerHTML = `
+      <td>${ac.hex_code||'?'}</td>
+      <td>${ac.callsign||'--'}</td>
+      <td>${fmtVal(ac.altitude,'ft')}</td>
+      <td>${fmtVal(ac.ground_speed,'kt')}</td>
+      <td>${fmtVal(ac.rssi,'dBm')}</td>`;
+    tr.onclick = () => selectAircraft(ac.hex_code);
+    tbody.appendChild(tr);
+  });
+}
+
+// ─── Aircraft selection / card ────────────────────────────────────────────────
+function selectAircraft(hex) {
+  selectedHex = hex;
+  renderAircraftList();
+  const ac = aircraftData[hex];
+  if (!ac) return;
+  const {cls, icon, label} = classifyAc(ac);
+  const flag = countryFlag(ac.country);
+  const typeName = aircraftTypeName(ac);
+  const isUnknown = !ac.aircraft_type;
+
+  document.getElementById('ac-placeholder').style.display = 'none';
+  const card = document.getElementById('ac-card');
+  card.style.display = 'block';
+  card.innerHTML = `
+    <div class="ac-card">
+      <div class="ac-header">
+        <div class="ac-callsign">${ac.callsign || ac.hex_code}</div>
+        <span class="ac-class-badge ${label}">${cls}</span>
+      </div>
+      <div class="ac-country">
+        <span class="ac-flag">${flag}</span>
+        <span class="ac-country-name">${ac.country || 'Unknown Country'}</span>
+      </div>
+      <div class="ac-type-row">
+        <span class="ac-type-icon">${icon}</span>
+        <span class="ac-type-name">${typeName}</span>
+      </div>
+      <div class="ac-info-grid" style="margin-top:8px;">
+        <div class="ac-field"><span class="ac-field-label">HEX</span><span class="ac-field-val">${ac.hex_code||'--'}</span></div>
+        <div class="ac-field"><span class="ac-field-label">ALTITUDE</span><span class="ac-field-val">${fmtVal(ac.altitude,'ft')}</span></div>
+        <div class="ac-field"><span class="ac-field-label">SPEED</span><span class="ac-field-val">${fmtVal(ac.ground_speed,'kt')}</span></div>
+        <div class="ac-field"><span class="ac-field-label">HEADING</span><span class="ac-field-val">${fmtVal(ac.track,'°')}</span></div>
+        <div class="ac-field"><span class="ac-field-label">SIGNAL</span><span class="ac-field-val">${fmtVal(ac.rssi,'dBm')}</span></div>
+        <div class="ac-field"><span class="ac-field-label">POSITION</span>
+          <span class="ac-field-val">${ac.latitude ? fmtVal(ac.latitude,'°',4) : 'NO GPS'}</span></div>
+      </div>
+      ${isUnknown ? `<button id="btn-annotate" onclick="openModal('${hex}')">✏ ADD TO DATABASE</button>` : ''}
+    </div>`;
+
+  // Also trigger LLM analysis if selected
+  triggerAnalysis(ac);
+}
+
+// ─── LLM analysis trigger ─────────────────────────────────────────────────────
+function triggerAnalysis(ac) {
+  fetch('/api/v1/analyze', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      hex_code: ac.hex_code,
+      callsign: ac.callsign,
+      anomaly_type: 'GENERAL_ANALYSIS',
+      ...ac
+    })
+  }).then(r => r.json()).then(d => {
+    const cls = d.classification || {};
+    const badgeClass = cls.category === 'MILITARY' ? 'sig-alert' :
+                       cls.category === 'CIVILIAN' ? 'sig-normal' : 'sig-weak';
+    document.getElementById('an-llm-class').innerHTML =
+      `<span class="sig-type-badge ${badgeClass}">${cls.category||'UNKNOWN'}</span>
+       <span style="color:var(--dim);font-size:10px;margin-left:8px;">confidence: ${((cls.confidence||0)*100).toFixed(0)}%</span>`;
+    document.getElementById('an-llm-text').textContent = d.analysis || 'No analysis available';
+  }).catch(() => {
+    document.getElementById('an-llm-text').textContent = 'LLM unavailable';
+  });
+}
+
+// ─── Periodic API polls ───────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/v1/system/status');
+    const d = await r.json();
+    systemUptime = d.uptime_seconds || 0;
+    document.getElementById('uptime-val').textContent  = fmtUptime(systemUptime);
+    document.getElementById('ac-count-val').textContent = d.aircraft_tracked || 0;
+    document.getElementById('sig-count-val').textContent = (d.signals_processed||0).toLocaleString();
+    document.getElementById('err-count-val').textContent = d.errors || 0;
+    setDot('dot-sys','ok'); setTxt('ftr-sys','SYSTEM: ONLINE');
+    setDot('dot-api','ok'); setTxt('ftr-api','API: OK');
+    // LLM
+    const llmOn = d.llm_enabled;
+    document.getElementById('an-llm-active').textContent = llmOn ? 'YES' : 'NO';
+    document.getElementById('llm-toggle-btn').textContent = llmOn ? 'ON' : 'OFF';
+    document.getElementById('llm-toggle-btn').style.color = llmOn ? 'var(--green)' : 'var(--dim)';
+    setDot('dot-llm', llmOn ? 'ok' : 'off');
+    setTxt('ftr-llm', llmOn ? 'LLM: ACTIVE' : 'LLM: OFF');
+    // Antenna mode
+    document.getElementById('antenna-select').value = d.antenna_mode || 'AIR';
+    document.getElementById('an-antenna').textContent = d.antenna_mode || '--';
+  } catch(_) {
+    setDot('dot-api','err'); setTxt('ftr-api','API: OFFLINE');
+    setDot('dot-sys','err'); setTxt('ftr-sys','SYSTEM: OFFLINE');
+  }
+}
+
+async function pollNoise() {
+  try {
+    const r = await fetch('/api/v1/noise/threshold');
+    const d = await r.json();
+    document.getElementById('curr-noise-val').textContent =
+      d.current_noise_dbm != null ? d.current_noise_dbm + ' dBm' : '-- dBm';
+    document.getElementById('noise-events-val').textContent = d.noise_events_5min || 0;
+  } catch(_) {}
+}
+
+async function pollNoiseSignal() {
+  try {
+    const r = await fetch('/noise');
+    const d = await r.json();
+    document.getElementById('an-sig-type').innerHTML =
+      `<span class="sig-type-badge ${sigBadge(d.current_signal_type)}">${d.current_signal_type||'--'}</span>`;
+    document.getElementById('an-confidence').textContent =
+      d.signal_confidence != null ? ((d.signal_confidence)*100).toFixed(0)+'%' : '--';
+    document.getElementById('an-noise').textContent = fmtVal(d.noise_dbm,'dBm');
+  } catch(_) {}
+}
+
+async function pollDump1090() {
+  try {
+    const r = await fetch('/api/v1/dump1090/status');
+    const d = await r.json();
+    const running = d.dump1090_status === 'running';
+    setDot('dot-dump', running ? 'ok' : 'err');
+    setTxt('ftr-dump', running ? 'dump1090: RUN' : 'dump1090: STOP');
+    document.getElementById('dump-btn').textContent = running ? 'STOP' : 'START';
+  } catch(_) {
+    setDot('dot-dump','off');
+    setTxt('ftr-dump','dump1090: --');
+  }
+}
+
+async function pollOscFallback() {
+  // Fallback HTTP poll if WebSocket is not connected
+  if (wsOsc && wsOsc.readyState === WebSocket.OPEN) return;
+  try {
+    const r = await fetch('/api/v1/oscilloscope/data');
+    const d = await r.json();
+    updateOscilloscope(d.ch1, d.ch2, d.ch1_stats, d.ch2_stats);
+  } catch(_) {}
+}
+
+function sigBadge(t) {
+  if (!t) return 'sig-weak';
+  if (t === 'STRONG') return 'sig-strong';
+  if (t === 'NORMAL') return 'sig-normal';
+  if (t === 'WEAK') return 'sig-weak';
+  return 'sig-weak';
+}
+
+// ─── Records table ────────────────────────────────────────────────────────────
+function showRec(btn, mode) {
+  recMode = mode;
+  document.querySelectorAll('.rec-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderRecords();
+}
+
+function renderRecords() {
+  const acs = Object.values(aircraftData);
+  const thead = document.getElementById('rec-thead-row');
+  const tbody = document.getElementById('rec-tbody');
+
+  let sorted, headers;
+  if (recMode === 'alt') {
+    sorted = [...acs].sort((a,b) => (b.altitude||0)-(a.altitude||0));
+    headers = ['HEX','CALLSIGN','ALTITUDE','SPD','SIG'];
+  } else if (recMode === 'spd') {
+    sorted = [...acs].sort((a,b) => (b.ground_speed||0)-(a.ground_speed||0));
+    headers = ['HEX','CALLSIGN','SPEED','ALT','SIG'];
+  } else if (recMode === 'sig') {
+    sorted = [...acs].sort((a,b) => (b.rssi||0)-(a.rssi||0));
+    headers = ['HEX','CALLSIGN','SIGNAL','ALT','SPD'];
+  } else {
+    // unique = shadow / no GPS
+    sorted = [...acs].filter(a => !a.latitude && !a.longitude)
+      .sort((a,b) => (a.callsign||'').localeCompare(b.callsign||''));
+    headers = ['HEX','CALLSIGN','CLASS','SIG','SEEN'];
+  }
+
+  thead.innerHTML = headers.map(h=>`<th>${h}</th>`).join('');
+  tbody.innerHTML = '';
+  sorted.slice(0,30).forEach((ac,i) => {
+    const tr = document.createElement('tr');
+    let cells;
+    if (recMode === 'alt') {
+      cells = [ac.hex_code, ac.callsign||'--',
+        fmtVal(ac.altitude,'ft'), fmtVal(ac.ground_speed,'kt'), fmtVal(ac.rssi,'dBm')];
+    } else if (recMode === 'spd') {
+      cells = [ac.hex_code, ac.callsign||'--',
+        fmtVal(ac.ground_speed,'kt'), fmtVal(ac.altitude,'ft'), fmtVal(ac.rssi,'dBm')];
+    } else if (recMode === 'sig') {
+      cells = [ac.hex_code, ac.callsign||'--',
+        fmtVal(ac.rssi,'dBm'), fmtVal(ac.altitude,'ft'), fmtVal(ac.ground_speed,'kt')];
+    } else {
+      const {cls} = classifyAc(ac);
+      cells = [ac.hex_code, ac.callsign||'--', cls,
+        fmtVal(ac.rssi,'dBm'), ac.first_seen ? ac.first_seen.slice(11,19) : '--'];
+    }
+    tr.innerHTML = cells.map((c,ci) =>
+      `<td class="${ci===0 && i<3 ? 'rec-gold' : ''}">${c}</td>`
+    ).join('');
+    tbody.appendChild(tr);
+  });
+}
+
+// ─── Controls ─────────────────────────────────────────────────────────────────
+function onGainInput(v) {
+  const n = parseInt(v);
+  document.getElementById('gain-val').textContent = (n>=0?'+':'')+n+' dB';
+  // Update gradient
+  const pct = ((n - (-5)) / 45) * 100;
+  const s = document.getElementById('gain-slider');
+  s.style.background = `linear-gradient(to right,var(--cyan) 0%,var(--cyan) ${pct}%,#1a2040 ${pct}%)`;
+  localStorage.setItem('ophir_gain', n);
+}
+
+function saveGain() {
+  const v = document.getElementById('gain-slider').value;
+  fetch('/api/v1/gain/set?value='+v, {method:'POST'}).catch(()=>{});
+  localStorage.setItem('ophir_gain', v);
+}
+
+function resetGain() {
+  document.getElementById('gain-slider').value = DEFAULT_GAIN;
+  onGainInput(DEFAULT_GAIN);
+  fetch('/api/v1/gain/set?value='+DEFAULT_GAIN, {method:'POST'}).catch(()=>{});
+}
+
+function onNoiseInput(v) {
+  const n = parseInt(v);
+  document.getElementById('noise-val').textContent = n+' dBm';
+  const pct = ((n - (-120)) / 100) * 100;
+  const s = document.getElementById('noise-slider');
+  s.style.background = `linear-gradient(to right,var(--orange) 0%,var(--orange) ${pct}%,#1a2040 ${pct}%)`;
+  applyNoiseSettings();
+}
+
+function applyNoiseSettings() {
+  const threshold = document.getElementById('noise-slider').value;
+  const filter = document.getElementById('chk-filter').checked;
+  const alert  = document.getElementById('chk-alert').checked;
+  const events = document.getElementById('chk-events').checked;
+  fetch(`/api/v1/noise/set?threshold=${threshold}&filter_enabled=${filter}&alert_enabled=${alert}&show_events=${events}`,
+    {method:'POST'}).catch(()=>{});
+}
+
+// ─── System ON/OFF ────────────────────────────────────────────────────────────
+function toggleSystem() {
+  const btn = document.getElementById('sys-btn');
+  if (btn.classList.contains('off')) {
+    // System was off – try to reload / reconnect
+    location.reload();
+    return;
+  }
+  if (!confirm('⚠ SHUTDOWN OPHIR 2.0?\n\nThis will stop all monitoring.\nPress OK to confirm graceful shutdown.'))
+    return;
+  fetch('/api/v1/system/shutdown', {method:'POST'})
+    .then(() => {
+      btn.classList.add('off');
+      btn.textContent = '● SYSTEM OFF';
+      document.getElementById('status-badge').className = 'badge-off';
+      document.getElementById('status-badge').textContent = '● OFFLINE';
+      setDot('dot-sys','err'); setTxt('ftr-sys','SYSTEM: OFFLINE');
+    })
+    .catch(() => {
+      btn.classList.add('off');
+      btn.textContent = '● SYSTEM OFF';
+    });
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') toggleSystem();
+});
+
+// ─── Antenna / dump1090 / LLM ─────────────────────────────────────────────────
+function switchAntenna(mode) {
+  fetch('/api/v1/antenna/mode', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mode})
+  }).catch(()=>{});
+}
+
+async function toggleDump1090() {
+  const btn = document.getElementById('dump-btn');
+  const action = btn.textContent === 'STOP' ? 'stop' : 'start';
+  try {
+    const r = await fetch('/api/v1/dump1090/'+action, {method:'POST'});
+    await r.json();
+    pollDump1090();
+  } catch(_){}
+}
+
+async function dump1090Action(action) {
+  try {
+    await fetch('/api/v1/dump1090/'+action, {method:'POST'});
+    setTimeout(pollDump1090, 2000);
+  } catch(_) {}
+}
+
+async function toggleLLM() {
+  try {
+    const r = await fetch('/api/v1/llm/toggle', {method:'POST'});
+    const d = await r.json();
+    const on = d.llm_enabled;
+    document.getElementById('llm-toggle-btn').textContent = on ? 'ON' : 'OFF';
+    document.getElementById('llm-toggle-btn').style.color = on ? 'var(--green)' : 'var(--dim)';
+  } catch(_) {}
+}
+
+// ─── Tab switching ────────────────────────────────────────────────────────────
+function showTab(btn, name, id) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(id).classList.add('active');
+  if (name === 'records') renderRecords();
+}
+
+// ─── Modal (annotate aircraft) ────────────────────────────────────────────────
+function openModal(hex) {
+  document.getElementById('modal-hex').value = hex;
+  const ac = aircraftData[hex] || {};
+  document.getElementById('modal-type').value = ac.aircraft_type || '';
+  document.getElementById('modal-country').value = ac.country || '';
+  document.getElementById('modal-notes').value = '';
+  document.getElementById('modal-msg').textContent = '';
+  document.getElementById('modal-bg').classList.add('open');
+  // Also prefill the Unknown tab
+  document.getElementById('unk-hex').value = hex;
+}
+function closeModal() {
+  document.getElementById('modal-bg').classList.remove('open');
+}
+document.getElementById('modal-bg').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-bg')) closeModal();
+});
+
+async function submitModalAnnotation() {
+  const payload = {
+    hex_code: document.getElementById('modal-hex').value,
+    aircraft_type: document.getElementById('modal-type').value,
+    aircraft_class: document.getElementById('modal-class').value,
+    country: document.getElementById('modal-country').value,
+    notes: document.getElementById('modal-notes').value,
+  };
+  try {
+    const r = await fetch('/api/v1/aircraft/annotate', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    document.getElementById('modal-msg').style.color = 'var(--green)';
+    document.getElementById('modal-msg').textContent = '✓ Saved successfully';
+    // Update local cache
+    if (aircraftData[payload.hex_code]) {
+      aircraftData[payload.hex_code].aircraft_type = payload.aircraft_type;
+      aircraftData[payload.hex_code].country = payload.country;
+    }
+    setTimeout(closeModal, 1200);
+  } catch(_) {
+    document.getElementById('modal-msg').style.color = 'var(--red)';
+    document.getElementById('modal-msg').textContent = '✗ Save failed';
+  }
+}
+
+async function submitAnnotation() {
+  const payload = {
+    hex_code: document.getElementById('unk-hex').value,
+    aircraft_type: document.getElementById('unk-type').value,
+    aircraft_class: document.getElementById('unk-class').value,
+    country: document.getElementById('unk-country').value,
+    notes: document.getElementById('unk-notes').value,
+  };
+  if (!payload.hex_code) {
+    document.getElementById('unk-msg').textContent = '⚠ HEX code is required'; return;
+  }
+  try {
+    await fetch('/api/v1/aircraft/annotate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    document.getElementById('unk-msg').style.color = 'var(--green)';
+    document.getElementById('unk-msg').textContent = '✓ Saved';
+    if (aircraftData[payload.hex_code]) {
+      aircraftData[payload.hex_code].aircraft_type = payload.aircraft_type;
+    }
+  } catch(_) {
+    document.getElementById('unk-msg').style.color = 'var(--red)';
+    document.getElementById('unk-msg').textContent = '✗ Error saving';
+  }
+}
+
+// ─── Footer helpers ───────────────────────────────────────────────────────────
+function setDot(id, state) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'ftr-dot ' + (state==='ok'?'dot-ok':state==='err'?'dot-err':state==='warn'?'dot-warn':'dot-off');
+}
+function setTxt(id, txt) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = txt;
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+function init() {
+  // Restore saved gain from localStorage
+  const savedGain = localStorage.getItem('ophir_gain');
+  const gainVal = savedGain ? parseInt(savedGain) : DEFAULT_GAIN;
+  document.getElementById('gain-slider').value = gainVal;
+  onGainInput(gainVal);
+
+  // Restore noise slider gradient
+  onNoiseInput(document.getElementById('noise-slider').value);
+
+  initMap();
+  initOscilloscope();
+  connectOscWS();
+  connectAircraftWS();
+
+  // Load initial gain from backend
+  fetch('/api/v1/gain/current').then(r=>r.json()).then(d => {
+    if (d.gain_db != null) {
+      document.getElementById('gain-slider').value = d.gain_db;
+      onGainInput(d.gain_db);
+    }
+  }).catch(()=>{});
+
+  // Load initial noise threshold
+  fetch('/api/v1/noise/threshold').then(r=>r.json()).then(d => {
+    if (d.threshold_dbm != null) {
+      document.getElementById('noise-slider').value = d.threshold_dbm;
+      onNoiseInput(d.threshold_dbm);
+    }
+  }).catch(()=>{});
+
+  // Poll system status every 3 seconds
+  pollStatus(); setInterval(pollStatus, 3000);
+  // Poll noise info every 5 seconds
+  pollNoise(); setInterval(pollNoise, 5000);
+  // Poll signal/noise analysis every 4 seconds
+  pollNoiseSignal(); setInterval(pollNoiseSignal, 4000);
+  // Poll dump1090 every 5 seconds
+  pollDump1090(); setInterval(pollDump1090, 5000);
+  // Fallback oscilloscope poll (when WS down)
+  setInterval(pollOscFallback, 2000);
+  // Records refresh
+  setInterval(() => { if (recMode) renderRecords(); }, 5000);
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
