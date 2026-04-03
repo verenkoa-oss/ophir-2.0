@@ -256,7 +256,12 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "sdr_connected": sdr_manager is not None, "detector_loaded": detector is not None}
+    return {
+        "status": "healthy",
+        "version": "2.0",
+        "sdr_connected": sdr_manager is not None,
+        "detector_loaded": detector is not None,
+    }
 
 @app.get("/aircraft")
 async def get_aircraft():
@@ -846,6 +851,7 @@ async def system_status():
     uptime_s = round(time.monotonic() - _system_start_monotonic)
     aircraft_count = len(sdr_manager.aircraft_dict) if sdr_manager else 0
     return {
+        "status": "operational",
         "system_online": True,
         "uptime_seconds": uptime_s,
         "aircraft_tracked": aircraft_count,
@@ -857,6 +863,8 @@ async def system_status():
         "sdr_connected": (sdr_manager.connected if sdr_manager else False),
         "llm_enabled": _llm_enabled,
         "antenna_mode": _antenna_mode.value,
+        "observer_lat": config.OBSERVER_LATITUDE,
+        "observer_lon": config.OBSERVER_LONGITUDE,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

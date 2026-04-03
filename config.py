@@ -22,16 +22,26 @@ DB_ECHO = False
 DB_POOL_SIZE = 10
 DB_MAX_OVERFLOW = 20
 
+# Observer Location
+OBSERVER_LATITUDE = 31.073541
+OBSERVER_LONGITUDE = 35.037383
+OBSERVER_LOCATION = "Middle East - Signal Intelligence Zone"
+
 API_HOST = "0.0.0.0"
 API_PORT = 8080
 API_WORKERS = 8
-API_RELOAD = False
+API_RELOAD = os.getenv("OPHIR_API_RELOAD", "false").lower() == "true"
 API_LOG_LEVEL = "info"
 
 DUMP1090_JSON_PATH = Path("/run/dump1090-mutability/data/aircraft.json")
 DUMP1090_HOST = "localhost"
-DUMP1090_PORT = 30005
+DUMP1090_PORT = 30001
+DUMP1090_MODE = "basic"
 SDR_UPDATE_INTERVAL = 1.0
+
+# WebSocket
+WS_HEARTBEAT = 1.0  # seconds
+WS_BUFFER_SIZE = 100
 
 SDR_GAIN = 45
 SDR_PPM = 0
@@ -72,6 +82,12 @@ LLM_REPORT_SCHEDULE = "00:00"
 # LLM runtime defaults
 LLM_ENABLED_DEFAULT = True
 
+# LLM configuration aliases
+LLM_HOST = "localhost"
+LLM_PORT = 11434
+LLM_MODEL = "mistral:latest"
+LLM_TIMEOUT = 30
+
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
 LOG_FILE_MAX_SIZE = 100 * 1024 * 1024
@@ -89,6 +105,16 @@ ENABLE_SHADOW_TRACKING = True
 ENABLE_LLM_ANALYSIS = True
 ENABLE_WEBSOCKET = True
 ENABLE_HISTORY_EXPORT = True
+
+# Database paths
+DB_PATH = "db/ophir.db"
+TRAINING_DB_PATH = "db/signal_training.db"
+RECORDS_DB_PATH = "db/records.db"
+
+# System behaviour
+SYSTEM_AUTONOMOUS = True
+AUTO_RESTART = True
+GRACEFUL_SHUTDOWN_TIMEOUT = 30
 
 class AircraftType(str, Enum):
     MILITARY = "military"
