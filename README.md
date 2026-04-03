@@ -72,6 +72,13 @@ Press Ctrl+C in terminal for graceful shutdown.
 - WebSocket: ws://0.0.0.0:8080/ws/live
 - Dashboard: http://0.0.0.0:8080/
 
+## GitHub Actions / CI
+
+This project uses GitHub Actions via Copilot agent sessions. The free GitHub Free plan includes **2,000 Actions minutes/month**. If you see limit errors:
+
+- Check your Actions usage: Settings → Billing → Usage this month
+- See [GITHUB_STATUS.md](./GITHUB_STATUS.md) for a full analysis of subscription status and available options
+
 ## Support
 
 For issues or questions, create GitHub issue.
