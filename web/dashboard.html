@@ -259,8 +259,8 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
       <div class="panel-hd">🎚️ GAIN CONTROL</div>
       <span class="ctrl-label">Signal Gain: <b>-5 dB → +40 dB</b></span>
       <div class="ctrl-row">
-        <input type="range" id="gain-slider" min="-5" max="40" step="1" value="45" oninput="onGainInput(this.value)">
-        <span class="ctrl-val" id="gain-val">+45 dB</span>
+        <input type="range" id="gain-slider" min="-5" max="40" step="1" value="40" oninput="onGainInput(this.value)">
+        <span class="ctrl-val" id="gain-val">+40 dB</span>
       </div>
       <div style="display:flex;gap:6px;">
         <button class="btn-sm btn-cyan" onclick="saveGain()">💾 Save</button>
@@ -367,10 +367,10 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
   <div id="right" class="panel" style="border-right:none;">
 
     <div class="tab-bar">
-      <button class="tab-btn active" onclick="showTab('aircraft','tab-aircraft')">✈ AIRCRAFT</button>
-      <button class="tab-btn" onclick="showTab('analysis','tab-analysis')">🔬 ANALYSIS</button>
-      <button class="tab-btn" onclick="showTab('records','tab-records')">🏆 RECORDS</button>
-      <button class="tab-btn" onclick="showTab('unknown','tab-unknown')">✏ UNKNOWN</button>
+      <button class="tab-btn active" onclick="showTab(this,'aircraft','tab-aircraft')">✈ AIRCRAFT</button>
+      <button class="tab-btn" onclick="showTab(this,'analysis','tab-analysis')">🔬 ANALYSIS</button>
+      <button class="tab-btn" onclick="showTab(this,'records','tab-records')">🏆 RECORDS</button>
+      <button class="tab-btn" onclick="showTab(this,'unknown','tab-unknown')">✏ UNKNOWN</button>
     </div>
 
     <!-- Aircraft Tab -->
@@ -412,10 +412,10 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
     <!-- Records Tab -->
     <div id="tab-records" class="tab-content" style="overflow:hidden;">
       <div class="rec-bar">
-        <button class="rec-tab active" onclick="showRec('alt')">▲ ALT</button>
-        <button class="rec-tab" onclick="showRec('spd')">⚡ SPD</button>
-        <button class="rec-tab" onclick="showRec('sig')">📶 SIGNAL</button>
-        <button class="rec-tab" onclick="showRec('unique')">★ UNIQUE</button>
+        <button class="rec-tab active" onclick="showRec(this,'alt')">▲ ALT</button>
+        <button class="rec-tab" onclick="showRec(this,'spd')">⚡ SPD</button>
+        <button class="rec-tab" onclick="showRec(this,'sig')">📶 SIGNAL</button>
+        <button class="rec-tab" onclick="showRec(this,'unique')">★ UNIQUE</button>
       </div>
       <div class="rec-table-wrap">
         <table class="rec-table">
@@ -507,7 +507,7 @@ const WS_PROTO  = location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_HOST   = location.host;
 const OBS_LAT   = 31.073541;
 const OBS_LON   = 35.037383;
-const DEFAULT_GAIN = 45;
+const DEFAULT_GAIN = 40;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let aircraftData   = {};       // hex -> ac object
@@ -973,10 +973,10 @@ function sigBadge(t) {
 }
 
 // ─── Records table ────────────────────────────────────────────────────────────
-function showRec(mode) {
+function showRec(btn, mode) {
   recMode = mode;
   document.querySelectorAll('.rec-tab').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
+  btn.classList.add('active');
   renderRecords();
 }
 
@@ -1134,10 +1134,10 @@ async function toggleLLM() {
 }
 
 // ─── Tab switching ────────────────────────────────────────────────────────────
-function showTab(name, id) {
-  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.remove('active'));
+function showTab(btn, name, id) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  event.target.classList.add('active');
+  btn.classList.add('active');
   document.getElementById(id).classList.add('active');
   if (name === 'records') renderRecords();
 }
