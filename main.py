@@ -12,10 +12,12 @@ import math
 import subprocess
 import time
 from datetime import datetime, timezone
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 import uvicorn
 import os
 
@@ -106,6 +108,27 @@ _noise_spike_events: list = []  # {dbm, ts} dicts for the last 5 min
 _system_start_monotonic: float = time.monotonic()
 _signals_processed: int = 0
 
+
+def _get_dump1090_pid() -> int | None:
+    """Return the PID of a running dump1090 process, or None if not found."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "dump1090-fa"],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip().split()[0])
+        # Also try the plain dump1090 binary name
+        result = subprocess.run(
+            ["pgrep", "-x", "dump1090"],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip().split()[0])
+    except Exception:
+        pass
+    return None
+
 @app.on_event("startup")
 async def startup():
     global sdr_manager, classifier, detector, llm_analyzer, learning_engine
@@ -163,6 +186,7 @@ async def shutdown():
                 pass
     if sdr_manager:
         await sdr_manager.stop_tracking()
+        await sdr_manager.close()
     if llm_analyzer:
         await llm_analyzer.close()
     if learning_engine:

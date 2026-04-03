@@ -29,6 +29,9 @@ DB_MAX_OVERFLOW = 20
 # Observer Location
 OBSERVER_LATITUDE = 31.073541
 OBSERVER_LONGITUDE = 35.037383
+# Aliases used throughout the codebase
+OBSERVER_LAT = OBSERVER_LATITUDE
+OBSERVER_LON = OBSERVER_LONGITUDE
 OBSERVER_LOCATION = "Middle East - Signal Intelligence Zone"
 # Short aliases used by main.py
 OBSERVER_LAT = OBSERVER_LATITUDE
@@ -110,11 +113,20 @@ NOISE_THRESHOLD_MIN = -100
 NOISE_THRESHOLD_MAX = -30
 
 # LLM settings
+LLM_ENABLED_DEFAULT = True
 ENABLE_LLM_ANALYSIS = True
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "mistral:latest"
 OLLAMA_TIMEOUT = 60.0
 LLM_ENABLED_DEFAULT = True
+
+# Distance calculator constants (Friis free-space path loss model for 1090 MHz ADS-B)
+DISTANCE_FREQ_HZ = 1_090_000_000.0   # 1090 MHz
+DISTANCE_TX_POWER_DBM = 54.0         # Typical ADS-B EIRP ~250 W
+DISTANCE_TX_GAIN_DBI = 0.0
+DISTANCE_RX_GAIN_DBI = 0.0
+DISTANCE_MIN_KM = 0.1
+DISTANCE_MAX_KM = 600.0
 
 # Archive
 AIRCRAFT_ARCHIVE_PATH = "data/aircraft_archive.json"
