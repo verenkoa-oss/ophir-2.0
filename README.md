@@ -75,3 +75,5 @@ Press Ctrl+C in terminal for graceful shutdown.
 ## Support
 
 For issues or questions, create GitHub issue.
+
+For information on checking your GitHub subscription status (Pro/Free), billing plan, payment history and plan limits, see [GITHUB_BILLING.md](GITHUB_BILLING.md).
