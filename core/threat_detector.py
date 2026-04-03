@@ -199,7 +199,7 @@ _detector_instance: ThreatDetector | None = None
 
 
 def get_detector() -> ThreatDetector:
-    """Return the module-level ThreatDetector singleton."""
+    """Factory: return the module-level ThreatDetector singleton."""
     global _detector_instance
     if _detector_instance is None:
         _detector_instance = ThreatDetector()

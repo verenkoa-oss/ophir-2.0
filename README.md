@@ -72,6 +72,34 @@ Press Ctrl+C in terminal for graceful shutdown.
 - WebSocket: ws://0.0.0.0:8080/ws/live
 - Dashboard: http://0.0.0.0:8080/
 
+## GitHub Actions
+
+GitHub Actions is **not required** for this project. The table below clarifies when it is needed:
+
+| Situation | Needs Actions? |
+|---|---|
+| Solo developer, personal project | ❌ No |
+| Building and running the project locally | ❌ No |
+| SDR / DSP / radio project for personal use | ❌ No |
+| Team of 5+ with automated CI/CD | ✅ Yes |
+
+The `.github/workflows/` directory is intentionally empty — no Actions workflows are configured or running.  
+This means **zero Actions minutes are consumed** and there is nothing to pay for.
+
+**What you need as a solo developer:**
+- `git push` to save your code on GitHub — free, unlimited
+- Build and run the project on your own machine — no GitHub infrastructure needed
+- GitHub Free plan covers unlimited public/private repositories and 2,000 Actions minutes/month (unused here)
+
+**When Actions would matter:**
+- Automating tests or builds on every push (CI/CD)
+- Deploying automatically to a server
+- Working in a team where multiple people push code
+
+**Bottom line:** Write code, `git push`, build locally. No Actions setup or payment needed.
+
 ## Support
 
 For issues or questions, create GitHub issue.
+
+For information on checking your GitHub subscription status (Pro/Free), billing plan, payment history and plan limits, see [GITHUB_BILLING.md](GITHUB_BILLING.md).
