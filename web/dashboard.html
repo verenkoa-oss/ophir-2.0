@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OPHIR 2.0 | AEGIS-X Airspace Monitor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:      #0d1117;
+    --panel:   #161b22;
+    --border:  #30363d;
+    --green:   #39d353;
+    --blue:    #58a6ff;
+    --orange:  #f78166;
+    --yellow:  #e3b341;
+    --text:    #c9d1d9;
+    --muted:   #8b949e;
+    --red:     #f85149;
+    --shadow:  rgba(0,0,0,0.6);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Courier New', monospace; font-size: 12px;
+    height: 100vh; overflow: hidden; display: flex; flex-direction: column;
+  }
+
+  /* ── TOP BAR ── */
+  #topbar {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 6px 12px; display: flex; align-items: center; gap: 16px;
+    flex-shrink: 0;
+  }
+  #topbar .logo { color: var(--green); font-size: 14px; font-weight: bold; letter-spacing: 2px; }
+  #topbar .coord { color: var(--muted); font-size: 11px; }
+  #topbar .spacer { flex: 1; }
+  .indicator { display: flex; align-items: center; gap: 5px; font-size: 11px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; animation: pulse 1.5s infinite; }
+  .dot.green { background: var(--green); }
+  .dot.red   { background: var(--red); animation: none; }
+  .dot.yellow{ background: var(--yellow); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* ── MAIN LAYOUT ── */
+  #main {
+    flex: 1; display: grid; overflow: hidden;
+    grid-template-columns: 220px 1fr 260px;
+    grid-template-rows: 1fr;
+    gap: 0;
+  }
+
+  /* ── LEFT PANEL ── */
+  #controls {
+    background: var(--panel); border-right: 1px solid var(--border);
+    padding: 10px; display: flex; flex-direction: column; gap: 8px;
+    overflow-y: auto;
+  }
+  .ctrl-section {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px;
+  }
+  .ctrl-title { color: var(--blue); font-size: 11px; font-weight: bold; margin-bottom: 6px; text-transform: uppercase; }
+  .ctrl-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .ctrl-label { color: var(--muted); }
+  .ctrl-val { color: var(--green); font-weight: bold; }
+
+  /* System toggle button */
+  #sysToggle {
+    width: 100%; padding: 8px; border: none; border-radius: 4px; cursor: pointer;
+    font-family: 'Courier New', monospace; font-size: 13px; font-weight: bold; letter-spacing: 1px;
+    transition: all 0.2s;
+  }
+  #sysToggle.on  { background: var(--red);   color: #fff; }
+  #sysToggle.off { background: var(--green); color: #000; }
+
+  /* Sliders */
+  input[type=range] {
+    -webkit-appearance: none; width: 100%; height: 4px;
+    background: var(--border); border-radius: 2px; outline: none; margin: 4px 0;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--blue); cursor: pointer;
+  }
+  input[type=range].noise-slider::-webkit-slider-thumb { background: var(--orange); }
+
+  /* Toggle buttons */
+  .toggle-btn {
+    padding: 4px 8px; border: 1px solid var(--border); border-radius: 3px;
+    background: var(--bg); color: var(--text); cursor: pointer; font-size: 11px;
+    font-family: 'Courier New', monospace; transition: all 0.15s;
+  }
+  .toggle-btn.active { background: var(--green); color: #000; border-color: var(--green); }
+
+  /* Stats */
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .stat-cell { background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 5px; text-align: center; }
+  .stat-num { color: var(--green); font-size: 18px; font-weight: bold; }
+  .stat-lbl { color: var(--muted); font-size: 10px; }
+
+  /* ── CENTER ── */
+  #center {
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* Oscilloscope */
+  #osc-container {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 8px; flex-shrink: 0; height: 210px;
+  }
+  .osc-header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .osc-title { color: var(--blue); font-weight: bold; font-size: 12px; }
+  .ch-label { font-size: 10px; padding: 2px 6px; border-radius: 2px; }
+  .ch1-label { background: rgba(57,211,83,0.15); color: var(--green); border: 1px solid var(--green); }
+  .ch2-label { background: rgba(248,81,73,0.15); color: var(--orange); border: 1px solid var(--orange); }
+  .osc-stats { margin-left: auto; display: flex; gap: 10px; font-size: 10px; color: var(--muted); }
+  #oscCanvas { width: 100%; height: 160px; }
+
+  /* Map */
+  #map-container { flex: 1; position: relative; overflow: hidden; }
+  #map { width: 100%; height: 100%; }
+
+  /* Map overlay */
+  #map-overlay {
+    position: absolute; top: 8px; left: 8px; z-index: 1000;
+    background: rgba(13,17,23,0.85); border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 10px; font-size: 11px;
+  }
+  #map-overlay .mo-row { display: flex; gap: 8px; align-items: center; }
+  .mo-label { color: var(--muted); }
+  .mo-val   { color: var(--green); }
+
+  /* ── RIGHT PANEL ── */
+  #right {
+    background: var(--panel); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .panel-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .tab-btn {
+    flex: 1; padding: 8px 4px; background: none; border: none; cursor: pointer;
+    font-family: 'Courier New', monospace; font-size: 11px; color: var(--muted);
+    border-bottom: 2px solid transparent; transition: all 0.15s;
+  }
+  .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .tab-content { flex: 1; overflow-y: auto; display: none; padding: 8px; }
+  .tab-content.active { display: block; }
+
+  /* Aircraft Card */
+  #ac-card { }
+  .ac-field { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .ac-key { color: var(--muted); }
+  .ac-val { color: var(--text); font-weight: bold; max-width: 130px; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+  .ac-val.green  { color: var(--green); }
+  .ac-val.yellow { color: var(--yellow); }
+  .ac-val.red    { color: var(--red); }
+  .ac-val.orange { color: var(--orange); }
+
+  .badge {
+    display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: bold;
+  }
+  .badge.civ  { background: rgba(57,211,83,0.2); color: var(--green); border: 1px solid var(--green); }
+  .badge.mil  { background: rgba(248,81,73,0.2); color: var(--red);   border: 1px solid var(--red); }
+  .badge.unk  { background: rgba(139,148,158,0.2); color: var(--muted); border: 1px solid var(--muted); }
+  .badge.shadow { background: rgba(243,179,65,0.2); color: var(--yellow); border: 1px solid var(--yellow); }
+
+  #llm-analysis {
+    margin-top: 8px; padding: 8px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); font-size: 11px; line-height: 1.5;
+    min-height: 60px;
+  }
+  #llm-analysis .lbl { color: var(--blue); font-weight: bold; margin-bottom: 4px; }
+
+  /* Aircraft list */
+  #ac-list-tab { }
+  .ac-list-row {
+    display: flex; align-items: center; gap: 6px; padding: 5px 0;
+    border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .ac-list-row:hover { background: rgba(88,166,255,0.05); }
+  .ac-hex { color: var(--blue); font-weight: bold; min-width: 60px; }
+  .ac-cs  { color: var(--green); min-width: 70px; }
+  .ac-alt { color: var(--yellow); min-width: 50px; text-align: right; }
+  .ac-rssi{ color: var(--muted); min-width: 45px; text-align: right; }
+  .ac-dist{ color: var(--orange); min-width: 45px; text-align: right; }
+
+  /* Records */
+  .rec-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .rec-table th { color: var(--blue); padding: 4px 2px; border-bottom: 1px solid var(--border); text-align: left; }
+  .rec-table td { padding: 3px 2px; border-bottom: 1px solid #21262d; }
+  .rec-table tr:hover td { background: rgba(88,166,255,0.05); }
+
+  /* ── BOTTOM BAR ── */
+  #bottombar {
+    background: var(--panel); border-top: 1px solid var(--border);
+    padding: 4px 12px; display: flex; align-items: center; gap: 16px;
+    flex-shrink: 0; font-size: 10px; color: var(--muted);
+  }
+  #bottombar .sep { color: var(--border); }
+  #bottombar .val { color: var(--text); }
+
+  /* Scrollbars */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Leaflet overrides for light-on-dark look */
+  .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+  .leaflet-popup-tip { background: var(--panel); }
+
+  /* Observer marker */
+  .obs-marker { background: var(--blue); border: 2px solid #fff; border-radius: 50%; width: 12px; height: 12px; }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div id="topbar">
+  <div class="logo">◈ OPHIR 2.0 | AEGIS-X</div>
+  <div class="coord">31.073541°N · 35.037383°E · Middle East</div>
+  <div class="spacer"></div>
+  <div class="indicator"><div class="dot green" id="ws-dot"></div><span id="ws-status">WS</span></div>
+  <div class="indicator"><div class="dot yellow" id="llm-dot"></div><span id="llm-status">LLM</span></div>
+  <div class="indicator"><div class="dot green" id="sdr-dot"></div><span id="sdr-status">SDR</span></div>
+  <div style="color:var(--muted);font-size:11px;" id="clock">--:--:--</div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+
+  <!-- LEFT: CONTROLS -->
+  <div id="controls">
+
+    <!-- System ON/OFF -->
+    <div class="ctrl-section">
+      <div class="ctrl-title">⚡ System</div>
+      <button id="sysToggle" class="on" onclick="toggleSystem()">🔴 SYSTEM ON</button>
+      <div style="margin-top:6px;">
+        <div class="ctrl-row"><span class="ctrl-label">Uptime</span><span class="ctrl-val" id="uptime-val">00:00:00</span></div>
+        <div class="ctrl-row"><span class="ctrl-label">Aircraft</span><span class="ctrl-val" id="ac-count-val">0</span></div>
+        <div class="ctrl-row"><span class="ctrl-label">Signals</span><span class="ctrl-val" id="sig-count-val">0</span></div>
+      </div>
+    </div>
+
+    <!-- Gain -->
+    <div class="ctrl-section">
+      <div class="ctrl-title">🎚️ Gain Control</div>
+      <div class="ctrl-row">
+        <span class="ctrl-label">-5 dB</span>
+        <span class="ctrl-val" id="gain-label">+<span id="gain-num">45</span> dB</span>
+        <span class="ctrl-label">+40 dB</span>
+      </div>
+      <input type="range" id="gainSlider" min="-5" max="40" value="45" step="1"
+             oninput="onGainChange(this.value)" onchange="setGain(this.value)">
+      <div style="display:flex;gap:4px;margin-top:4px;">
+        <button class="toggle-btn" onclick="gainPreset(15)">+15</button>
+        <button class="toggle-btn" onclick="gainPreset(25)">+25</button>
+        <button class="toggle-btn" onclick="gainPreset(35)">+35</button>
+        <button class="toggle-btn" onclick="gainPreset(40)">MAX</button>
+      </div>
+    </div>
+
+    <!-- Noise -->
+    <div class="ctrl-section">
+      <div class="ctrl-title">🔊 Noise Control</div>
+      <div class="ctrl-row">
+        <span class="ctrl-label">-100</span>
+        <span class="ctrl-val" id="noise-label"><span id="noise-num">-75</span> dBm</span>
+        <span class="ctrl-label">-30</span>
+      </div>
+      <input type="range" id="noiseSlider" class="noise-slider" min="-100" max="-30" value="-75" step="1"
+             oninput="onNoiseChange(this.value)" onchange="setNoise(this.value)">
+      <div style="display:flex;gap:4px;margin-top:4px;align-items:center;">
+        <button class="toggle-btn active" id="filterBtn" onclick="toggleFilter()">Filter ON</button>
+        <span style="color:var(--muted);font-size:10px;margin-left:4px;">Events: <span id="noise-events">0</span></span>
+      </div>
+    </div>
+
+    <!-- LLM -->
+    <div class="ctrl-section">
+      <div class="ctrl-title">🤖 LLM</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button class="toggle-btn active" id="llmBtn" onclick="toggleLLM()">LLM ON</button>
+        <button class="toggle-btn" onclick="analyzeCurrent()">Analyze</button>
+      </div>
+      <div class="ctrl-row" style="margin-top:4px;">
+        <span class="ctrl-label">Model</span>
+        <span class="ctrl-val" id="llm-model">mistral</span>
+      </div>
+    </div>
+
+    <!-- Dump1090 -->
+    <div class="ctrl-section">
+      <div class="ctrl-title">📡 Dump1090</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+        <button class="toggle-btn" onclick="dump1090Action('start')">START</button>
+        <button class="toggle-btn" onclick="dump1090Action('stop')">STOP</button>
+        <button class="toggle-btn" onclick="dump1090Action('restart')">RESTART</button>
+      </div>
+      <div class="ctrl-row" style="margin-top:4px;">
+        <span class="ctrl-label">Status</span>
+        <span class="ctrl-val" id="d1090-status">--</span>
+      </div>
+    </div>
+
+    <!-- Antenna -->
+    <div class="ctrl-section">
+      <div class="ctrl-title">📻 Antenna</div>
+      <div style="display:flex;gap:4px;">
+        <button class="toggle-btn active" id="ant-air" onclick="setAntenna('AIR')">AIR</button>
+        <button class="toggle-btn" id="ant-garage" onclick="setAntenna('GARAGE')">GARAGE</button>
+      </div>
+      <div class="ctrl-row" style="margin-top:4px;">
+        <span class="ctrl-label">Threshold</span>
+        <span class="ctrl-val" id="ant-thresh">-90 dBm</span>
+      </div>
+    </div>
+
+    <!-- Learning stats -->
+    <div class="ctrl-section">
+      <div class="ctrl-title">🧠 Learning</div>
+      <div class="ctrl-row"><span class="ctrl-label">Samples</span><span class="ctrl-val" id="learn-samples">0</span></div>
+      <div class="ctrl-row"><span class="ctrl-label">Types</span><span class="ctrl-val" id="learn-types">0</span></div>
+    </div>
+
+  </div>
+
+  <!-- CENTER -->
+  <div id="center">
+
+    <!-- Oscilloscope -->
+    <div id="osc-container">
+      <div class="osc-header">
+        <span class="osc-title">OSCILLOSCOPE</span>
+        <span class="ch-label ch1-label">CH1: ADS-B Signal</span>
+        <span class="ch-label ch2-label">CH2: Noise Floor</span>
+        <div class="osc-stats">
+          <span>Max: <span id="osc-max">--</span> dBm</span>
+          <span>Avg: <span id="osc-avg">--</span> dBm</span>
+          <span>Min: <span id="osc-min">--</span> dBm</span>
+          <span>Samples: <span id="osc-samples">0</span></span>
+        </div>
+      </div>
+      <canvas id="oscCanvas"></canvas>
+    </div>
+
+    <!-- Map -->
+    <div id="map-container">
+      <div id="map"></div>
+      <div id="map-overlay">
+        <div class="mo-row">
+          <span class="mo-label">Visible:</span>
+          <span class="mo-val" id="map-visible">0 aircraft</span>
+          <span class="mo-label" style="margin-left:8px;">Center:</span>
+          <span class="mo-val">31.07°N 35.04°E</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT: INFO PANEL -->
+  <div id="right">
+    <div class="panel-tabs">
+      <button class="tab-btn active" onclick="switchTab('aircraft')">✈ Aircraft</button>
+      <button class="tab-btn" onclick="switchTab('list')">≡ List</button>
+      <button class="tab-btn" onclick="switchTab('records')">🏆 Records</button>
+    </div>
+
+    <!-- Aircraft Detail -->
+    <div id="tab-aircraft" class="tab-content active">
+      <div id="ac-card">
+        <div class="ac-field"><span class="ac-key">ICAO Hex</span><span class="ac-val green" id="ac-hex">—</span></div>
+        <div class="ac-field"><span class="ac-key">Callsign</span><span class="ac-val" id="ac-cs">—</span></div>
+        <div class="ac-field"><span class="ac-key">Class</span><span id="ac-class-badge">—</span></div>
+        <div class="ac-field"><span class="ac-key">Country</span><span class="ac-val" id="ac-country">—</span></div>
+        <div class="ac-field"><span class="ac-key">Altitude</span><span class="ac-val yellow" id="ac-alt">— ft</span></div>
+        <div class="ac-field"><span class="ac-key">Speed</span><span class="ac-val" id="ac-speed">— kt</span></div>
+        <div class="ac-field"><span class="ac-key">Heading</span><span class="ac-val" id="ac-hdg">—°</span></div>
+        <div class="ac-field"><span class="ac-key">RSSI</span><span class="ac-val orange" id="ac-rssi">— dBm</span></div>
+        <div class="ac-field"><span class="ac-key">Distance</span><span class="ac-val green" id="ac-dist">— km</span></div>
+        <div class="ac-field"><span class="ac-key">Bearing</span><span class="ac-val" id="ac-bearing">—°</span></div>
+        <div class="ac-field"><span class="ac-key">GPS</span><span class="ac-val" id="ac-gps">—</span></div>
+        <div class="ac-field"><span class="ac-key">Shadow</span><span class="ac-val" id="ac-shadow">—</span></div>
+        <div class="ac-field"><span class="ac-key">Last seen</span><span class="ac-val" id="ac-lastseen">—</span></div>
+      </div>
+      <div id="llm-analysis">
+        <div class="lbl">🤖 LLM Analysis</div>
+        <div id="llm-text" style="margin-top:4px;">Select aircraft to analyze…</div>
+      </div>
+    </div>
+
+    <!-- Aircraft List -->
+    <div id="tab-list" class="tab-content">
+      <div id="ac-list"></div>
+    </div>
+
+    <!-- Records -->
+    <div id="tab-records" class="tab-content">
+      <div style="color:var(--blue);font-size:11px;margin-bottom:6px;">Top Altitudes</div>
+      <table class="rec-table" id="rec-alt"><thead><tr><th>HEX</th><th>CS</th><th>ALT ft</th><th>RSSI</th></tr></thead><tbody></tbody></table>
+      <div style="color:var(--blue);font-size:11px;margin:8px 0 6px;">Top Signals (RSSI)</div>
+      <table class="rec-table" id="rec-rssi"><thead><tr><th>HEX</th><th>CS</th><th>dBm</th><th>Dist km</th></tr></thead><tbody></tbody></table>
+      <div style="color:var(--blue);font-size:11px;margin:8px 0 6px;">Top Speeds</div>
+      <table class="rec-table" id="rec-spd"><thead><tr><th>HEX</th><th>CS</th><th>kt</th><th>Alt ft</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM BAR -->
+<div id="bottombar">
+  <span>OPHIR 2.0</span><span class="sep">|</span>
+  <span>Observer: <span class="val">31.073541°N · 35.037383°E</span></span><span class="sep">|</span>
+  <span>WiFi: <span class="val" id="net-ip">scanning…</span></span><span class="sep">|</span>
+  <span>API: <span class="val" id="api-status">connecting…</span></span><span class="sep">|</span>
+  <span>WS: <span class="val" id="ws-info">—</span></span><span class="sep">|</span>
+  <span>Gain: <span class="val" id="bot-gain">45 dB</span></span><span class="sep">|</span>
+  <span>Noise: <span class="val" id="bot-noise">-75 dBm</span></span>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════
+const API   = `${location.protocol}//${location.host}`;
+const WS_AC = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v1/live/aircraft`;
+const WS_OS = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/oscilloscope`;
+
+const OBS_LAT = 31.073541;
+const OBS_LON = 35.037383;
+
+// ═══════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════
+let allAircraft = {};
+let selectedHex = null;
+let systemOn    = true;
+let filterOn    = true;
+let llmOn       = true;
+let noiseEvents = 0;
+let wsAcConn    = false;
+let wsOsConn    = false;
+let markers     = {};
+let map, obsMarker;
+let oscChart, oscData1 = [], oscData2 = [];
+const MAX_OSC_SAMPLES = 60;
+
+// ═══════════════════════════════════════════════════════════
+// CLOCK
+// ═══════════════════════════════════════════════════════════
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toUTCString().slice(17, 25) + ' UTC';
+}, 1000);
+
+// ═══════════════════════════════════════════════════════════
+// MAP
+// ═══════════════════════════════════════════════════════════
+function initMap() {
+  map = L.map('map', { zoomControl: true, attributionControl: false }).setView([OBS_LAT, OBS_LON], 7);
+  // Light-colored tile layer
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    opacity: 0.85
+  }).addTo(map);
+
+  // Observer marker
+  const obsIcon = L.divIcon({
+    html: '<div style="width:14px;height:14px;background:#58a6ff;border:2px solid white;border-radius:50%;"></div>',
+    iconSize: [14, 14], iconAnchor: [7, 7], className: ''
+  });
+  obsMarker = L.marker([OBS_LAT, OBS_LON], { icon: obsIcon })
+    .bindPopup('<b>Observer Station</b><br>31.073541°N 35.037383°E')
+    .addTo(map);
+}
+
+function getAircraftIcon(ac) {
+  const isShadow = ac.is_shadow || (!ac.latitude && !ac.longitude);
+  const isMil    = (ac.aircraft_type||'').toLowerCase() === 'military';
+  let color = isShadow ? '#e3b341' : (isMil ? '#f85149' : '#39d353');
+  const hdg = ac.track || 0;
+  return L.divIcon({
+    html: `<div style="transform:rotate(${hdg}deg);font-size:16px;line-height:1;color:${color};text-shadow:0 0 4px rgba(0,0,0,0.8);">✈</div>`,
+    iconSize: [20, 20], iconAnchor: [10, 10], className: ''
+  });
+}
+
+function updateMapMarkers(list) {
+  const seen = new Set();
+  for (const ac of list) {
+    if (!ac.latitude || !ac.longitude) continue;
+    seen.add(ac.hex_code);
+    const lat = parseFloat(ac.latitude), lon = parseFloat(ac.longitude);
+    if (isNaN(lat) || isNaN(lon)) continue;
+
+    const cs = ac.callsign || ac.hex_code;
+    const alt = ac.altitude ? `${ac.altitude} ft` : '—';
+    const popup = `<b>${cs}</b><br>HEX: ${ac.hex_code}<br>Alt: ${alt}<br>RSSI: ${ac.rssi||'—'} dBm<br>Dist: ${ac.distance_km||'—'} km`;
+
+    if (markers[ac.hex_code]) {
+      markers[ac.hex_code].setLatLng([lat, lon]).setIcon(getAircraftIcon(ac)).setPopupContent(popup);
+    } else {
+      markers[ac.hex_code] = L.marker([lat, lon], { icon: getAircraftIcon(ac) })
+        .bindPopup(popup)
+        .on('click', () => selectAircraft(ac.hex_code))
+        .addTo(map);
+    }
+  }
+  // Remove stale markers
+  for (const hex in markers) {
+    if (!seen.has(hex)) { map.removeLayer(markers[hex]); delete markers[hex]; }
+  }
+  document.getElementById('map-visible').textContent = `${seen.size} aircraft`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// OSCILLOSCOPE
+// ═══════════════════════════════════════════════════════════
+function initOscilloscope() {
+  const ctx = document.getElementById('oscCanvas').getContext('2d');
+  oscChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: Array(MAX_OSC_SAMPLES).fill(''),
+      datasets: [
+        {
+          label: 'CH1: ADS-B',
+          data: Array(MAX_OSC_SAMPLES).fill(null),
+          borderColor: '#39d353', borderWidth: 1.5, pointRadius: 0,
+          fill: false, tension: 0.3
+        },
+        {
+          label: 'CH2: Noise',
+          data: Array(MAX_OSC_SAMPLES).fill(null),
+          borderColor: '#f78166', borderWidth: 1, pointRadius: 0,
+          fill: false, tension: 0.3, borderDash: [3, 3]
+        },
+        {
+          label: 'Threshold',
+          data: Array(MAX_OSC_SAMPLES).fill(-75),
+          borderColor: '#e3b341', borderWidth: 1, pointRadius: 0,
+          fill: false, borderDash: [6, 3]
+        }
+      ]
+    },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          min: -110, max: -30,
+          ticks: { color: '#8b949e', font: { size: 9 }, callback: v => v + ' dB' },
+          grid: { color: '#21262d' }
+        }
+      }
+    }
+  });
+}
+
+function updateOscilloscope(ch1, ch2, threshold) {
+  // Append new samples
+  const all1 = (oscData1.concat(ch1)).slice(-MAX_OSC_SAMPLES);
+  const all2 = (oscData2.concat(ch2)).slice(-MAX_OSC_SAMPLES);
+  oscData1 = all1; oscData2 = all2;
+
+  oscChart.data.datasets[0].data = [...oscData1];
+  oscChart.data.datasets[1].data = [...oscData2];
+  oscChart.data.datasets[2].data = Array(MAX_OSC_SAMPLES).fill(threshold);
+  oscChart.update('none');
+
+  const valid = oscData1.filter(v => v !== null);
+  if (valid.length) {
+    document.getElementById('osc-max').textContent     = Math.max(...valid).toFixed(1);
+    document.getElementById('osc-avg').textContent     = (valid.reduce((a,b)=>a+b,0)/valid.length).toFixed(1);
+    document.getElementById('osc-min').textContent     = Math.min(...valid).toFixed(1);
+    document.getElementById('osc-samples').textContent = valid.length;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// WEBSOCKET: AIRCRAFT
+// ═══════════════════════════════════════════════════════════
+let wsAc = null;
+function connectWsAircraft() {
+  wsAc = new WebSocket(WS_AC);
+  wsAc.onopen = () => {
+    wsAcConn = true;
+    setDot('ws-dot', 'green'); setTxt('ws-status', 'WS ✓'); setTxt('ws-info', 'live');
+  };
+  wsAc.onmessage = e => {
+    const data = JSON.parse(e.data);
+    const list = data.aircraft || [];
+    processAircraftData(list);
+  };
+  wsAc.onclose = () => {
+    wsAcConn = false;
+    setDot('ws-dot', 'red'); setTxt('ws-status', 'WS ✗'); setTxt('ws-info', 'reconnecting…');
+    setTimeout(connectWsAircraft, 3000);
+  };
+  wsAc.onerror = () => wsAc.close();
+}
+
+// ═══════════════════════════════════════════════════════════
+// WEBSOCKET: OSCILLOSCOPE
+// ═══════════════════════════════════════════════════════════
+let wsOs = null;
+function connectWsOscilloscope() {
+  wsOs = new WebSocket(WS_OS);
+  wsOs.onmessage = e => {
+    const data = JSON.parse(e.data);
+    updateOscilloscope(data.ch1 || [], data.ch2 || [], data.noise_threshold_dbm || -75);
+    // Sync gain/noise UI
+    document.getElementById('gainSlider').value = data.gain_db || 45;
+    document.getElementById('gain-num').textContent = Math.round(data.gain_db || 45);
+    document.getElementById('bot-gain').textContent = `${Math.round(data.gain_db||45)} dB`;
+    setNoiseUI(data.noise_threshold_dbm || -75);
+  };
+  wsOs.onclose = () => { wsOsConn = false; setTimeout(connectWsOscilloscope, 3000); };
+  wsOs.onerror = () => wsOs.close();
+}
+
+// ═══════════════════════════════════════════════════════════
+// AIRCRAFT DATA PROCESSING
+// ═══════════════════════════════════════════════════════════
+function processAircraftData(list) {
+  for (const ac of list) {
+    allAircraft[ac.hex_code] = ac;
+  }
+  // Prune stale (not seen in last 60s)
+  const now = Date.now();
+  for (const hex in allAircraft) {
+    const ac = allAircraft[hex];
+    const ls = ac.last_seen ? new Date(ac.last_seen).getTime() : 0;
+    if (now - ls > 60000) delete allAircraft[hex];
+  }
+
+  const arr = Object.values(allAircraft);
+  updateMapMarkers(arr);
+  updateAircraftList(arr);
+  updateRecords(arr);
+  updateStats(arr);
+
+  if (selectedHex && allAircraft[selectedHex]) {
+    renderAircraftCard(allAircraft[selectedHex]);
+  } else if (!selectedHex && arr.length > 0) {
+    selectAircraft(arr[0].hex_code);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// AIRCRAFT LIST TAB
+// ═══════════════════════════════════════════════════════════
+function updateAircraftList(arr) {
+  const sorted = [...arr].sort((a,b) => (b.rssi||−200) - (a.rssi||−200));
+  const container = document.getElementById('ac-list');
+  container.innerHTML = '';
+  for (const ac of sorted.slice(0, 50)) {
+    const row = document.createElement('div');
+    row.className = 'ac-list-row' + (ac.hex_code === selectedHex ? ' selected' : '');
+    const dist = ac.distance_km != null ? `${ac.distance_km}km` : '?km';
+    row.innerHTML =
+      `<span class="ac-hex">${ac.hex_code}</span>` +
+      `<span class="ac-cs">${ac.callsign || '—'}</span>` +
+      `<span class="ac-alt">${ac.altitude ? ac.altitude + 'ft' : '—'}</span>` +
+      `<span class="ac-rssi">${ac.rssi || '—'}</span>` +
+      `<span class="ac-dist">${dist}</span>`;
+    row.onclick = () => selectAircraft(ac.hex_code);
+    container.appendChild(row);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// RECORDS TAB
+// ═══════════════════════════════════════════════════════════
+function updateRecords(arr) {
+  // Top altitudes
+  const byAlt  = [...arr].filter(a=>a.altitude).sort((a,b)=>b.altitude-a.altitude).slice(0,8);
+  const byRssi = [...arr].filter(a=>a.rssi).sort((a,b)=>b.rssi-a.rssi).slice(0,8);
+  const bySpd  = [...arr].filter(a=>a.ground_speed).sort((a,b)=>b.ground_speed-a.ground_speed).slice(0,8);
+
+  fillTable('rec-alt', byAlt, a=>[a.hex_code, a.callsign||'—', a.altitude, a.rssi||'—']);
+  fillTable('rec-rssi', byRssi, a=>[a.hex_code, a.callsign||'—', a.rssi, a.distance_km||'—']);
+  fillTable('rec-spd', bySpd, a=>[a.hex_code, a.callsign||'—', a.ground_speed, a.altitude||'—']);
+}
+
+function fillTable(id, data, cols) {
+  const tbody = document.querySelector(`#${id} tbody`);
+  tbody.innerHTML = '';
+  for (const row of data) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = cols(row).map(c=>`<td>${c}</td>`).join('');
+    tr.onclick = () => selectAircraft(row.hex_code);
+    tbody.appendChild(tr);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// AIRCRAFT CARD
+// ═══════════════════════════════════════════════════════════
+function selectAircraft(hex) {
+  selectedHex = hex;
+  const ac = allAircraft[hex];
+  if (!ac) return;
+  renderAircraftCard(ac);
+  switchTab('aircraft');
+  if (ac.latitude && ac.longitude) map.setView([ac.latitude, ac.longitude], 9);
+}
+
+function renderAircraftCard(ac) {
+  setText('ac-hex', ac.hex_code || '—');
+  setText('ac-cs',  ac.callsign || '—');
+  setText('ac-country', ac.country || '—');
+  setText('ac-alt',  ac.altitude ? `${ac.altitude} ft` : '—');
+  setText('ac-speed',ac.ground_speed ? `${ac.ground_speed} kt` : '—');
+  setText('ac-hdg',  ac.track ? `${ac.track}°` : '—');
+  setText('ac-rssi', ac.rssi ? `${ac.rssi} dBm` : '—');
+  setText('ac-dist', ac.distance_km != null ? `${ac.distance_km} km` : '—');
+  setText('ac-bearing', ac.bearing_deg != null ? `${ac.bearing_deg}°` : '—');
+  const hasGps = ac.latitude && ac.longitude;
+  setText('ac-gps', hasGps ? `${parseFloat(ac.latitude).toFixed(4)}°N ${parseFloat(ac.longitude).toFixed(4)}°E` : 'NO GPS (RSSI mode)');
+  setText('ac-shadow', ac.is_shadow ? '⚠ SHADOW TARGET' : '—');
+
+  const ls = ac.last_seen ? new Date(ac.last_seen).toUTCString().slice(17,25) : '—';
+  setText('ac-lastseen', ls);
+
+  const acType = (ac.aircraft_type||'').toLowerCase();
+  const isMil = acType === 'military', isShadow = ac.is_shadow || !hasGps;
+  const badge = document.getElementById('ac-class-badge');
+  if (isMil)        badge.innerHTML = `<span class="badge mil">MILITARY</span>`;
+  else if (isShadow)badge.innerHTML = `<span class="badge shadow">SHADOW</span>`;
+  else              badge.innerHTML = `<span class="badge civ">CIVILIAN</span>`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// STATS
+// ═══════════════════════════════════════════════════════════
+function updateStats(arr) {
+  setText('ac-count-val', arr.length);
+}
+
+// ═══════════════════════════════════════════════════════════
+// SYSTEM STATUS POLLING
+// ═══════════════════════════════════════════════════════════
+async function pollSystemStatus() {
+  try {
+    const r = await fetch(`${API}/api/v1/system/status`);
+    const d = await r.json();
+    setText('uptime-val', d.uptime || '—');
+    setText('sig-count-val', d.signal_count || 0);
+    setText('d1090-status', d.dump1090_running ? '✓ running' : '✗ stopped');
+    setText('net-ip', location.host);
+    setText('api-status', '✓ online');
+    setText('learn-samples', d.learning_samples || 0);
+    if (d.gain_db != null) {
+      document.getElementById('gainSlider').value = d.gain_db;
+      document.getElementById('gain-num').textContent = Math.round(d.gain_db);
+      document.getElementById('bot-gain').textContent = `${Math.round(d.gain_db)} dB`;
+    }
+    setDot('sdr-dot', d.dump1090_running ? 'green' : 'red');
+    setText('sdr-status', d.dump1090_running ? 'SDR ✓' : 'SDR ✗');
+  } catch(e) {
+    setText('api-status', '✗ offline');
+  }
+}
+
+async function pollLLMStatus() {
+  try {
+    const r = await fetch(`${API}/api/v1/llm/status`);
+    const d = await r.json();
+    setText('llm-model', (d.model||'').split(':')[0]);
+    setDot('llm-dot', d.ollama_connected ? 'green' : 'red');
+    setText('llm-status', d.ollama_connected ? 'LLM ✓' : 'LLM ✗');
+    setText('llmBtn', d.llm_enabled ? 'LLM ON' : 'LLM OFF');
+    document.getElementById('llmBtn').className = 'toggle-btn' + (d.llm_enabled ? ' active' : '');
+    llmOn = d.llm_enabled;
+  } catch(e) {}
+}
+
+async function pollLearnStats() {
+  try {
+    const r = await fetch(`${API}/api/v1/learning/stats`);
+    const d = await r.json();
+    setText('learn-samples', d.total_civilian_samples || 0);
+    setText('learn-types', d.aircraft_types_learned || 0);
+  } catch(e) {}
+}
+
+async function pollDump1090Status() {
+  try {
+    const r = await fetch(`${API}/api/v1/dump1090/status`);
+    const d = await r.json();
+    setText('d1090-status', d.dump1090_status === 'running' ? '✓ running' : '✗ stopped');
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════
+// CONTROLS
+// ═══════════════════════════════════════════════════════════
+function toggleSystem() {
+  systemOn = !systemOn;
+  const btn = document.getElementById('sysToggle');
+  if (systemOn) {
+    btn.className = 'on'; btn.textContent = '🔴 SYSTEM ON';
+    connectWsAircraft(); connectWsOscilloscope();
+  } else {
+    btn.className = 'off'; btn.textContent = '🟢 SYSTEM OFF';
+    if (wsAc)  { wsAc.close(); }
+    if (wsOs)  { wsOs.close(); }
+  }
+}
+
+function onGainChange(v) {
+  document.getElementById('gain-num').textContent = Math.round(v);
+  document.getElementById('bot-gain').textContent = `${Math.round(v)} dB`;
+}
+function gainPreset(v) {
+  document.getElementById('gainSlider').value = v;
+  setGain(v);
+}
+async function setGain(v) {
+  onGainChange(v);
+  try { await fetch(`${API}/api/v1/gain/set?value=${v}`, {method:'POST'}); } catch(e) {}
+}
+
+function setNoiseUI(v) {
+  document.getElementById('noiseSlider').value = v;
+  document.getElementById('noise-num').textContent = Math.round(v);
+  document.getElementById('bot-noise').textContent = `${Math.round(v)} dBm`;
+}
+function onNoiseChange(v) { setNoiseUI(v); }
+async function setNoise(v) {
+  setNoiseUI(v);
+  const fe = document.getElementById('filterBtn').classList.contains('active');
+  try { await fetch(`${API}/api/v1/noise/set?threshold=${v}&filter_enabled=${fe}`, {method:'POST'}); } catch(e) {}
+  noiseEvents++;
+  document.getElementById('noise-events').textContent = noiseEvents;
+}
+function toggleFilter() {
+  filterOn = !filterOn;
+  const btn = document.getElementById('filterBtn');
+  btn.className = 'toggle-btn' + (filterOn ? ' active' : '');
+  btn.textContent = filterOn ? 'Filter ON' : 'Filter OFF';
+  setNoise(document.getElementById('noiseSlider').value);
+}
+
+async function toggleLLM() {
+  try {
+    const r = await fetch(`${API}/api/v1/llm/toggle`, {method:'POST'});
+    const d = await r.json();
+    llmOn = d.llm_enabled;
+    const btn = document.getElementById('llmBtn');
+    btn.className = 'toggle-btn' + (llmOn ? ' active' : '');
+    btn.textContent = llmOn ? 'LLM ON' : 'LLM OFF';
+    setDot('llm-dot', llmOn ? 'yellow' : 'red');
+  } catch(e) {}
+}
+
+async function analyzeCurrent() {
+  if (!selectedHex || !allAircraft[selectedHex]) return;
+  const ac = allAircraft[selectedHex];
+  document.getElementById('llm-text').textContent = '⏳ Analyzing…';
+  try {
+    const r = await fetch(`${API}/api/v1/analyze`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({...ac, hex_code: ac.hex_code, anomaly_type: 'GENERAL_ANALYSIS'})
+    });
+    const d = await r.json();
+    document.getElementById('llm-text').textContent = d.analysis || 'No analysis';
+  } catch(e) {
+    document.getElementById('llm-text').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function dump1090Action(action) {
+  try {
+    await fetch(`${API}/api/v1/dump1090/${action}`, {method:'POST'});
+    setTimeout(pollDump1090Status, 1000);
+  } catch(e) {}
+}
+
+async function setAntenna(mode) {
+  try {
+    const r = await fetch(`${API}/api/v1/antenna/mode`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode})
+    });
+    const d = await r.json();
+    setText('ant-thresh', `${d.rssi_threshold} dBm`);
+    document.getElementById('ant-air').className    = 'toggle-btn' + (mode==='AIR'    ? ' active' : '');
+    document.getElementById('ant-garage').className = 'toggle-btn' + (mode==='GARAGE' ? ' active' : '');
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════════
+// UI HELPERS
+// ═══════════════════════════════════════════════════════════
+function setText(id, val) { const el=document.getElementById(id); if(el) el.textContent = val; }
+function setDot(id, color) {
+  const el = document.getElementById(id);
+  if(el) { el.className = 'dot ' + color; }
+}
+function switchTab(name) {
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const tc = document.getElementById('tab-' + name);
+  if(tc) tc.classList.add('active');
+  const btns = document.querySelectorAll('.tab-btn');
+  const names = ['aircraft', 'list', 'records'];
+  const idx = names.indexOf(name);
+  if(btns[idx]) btns[idx].classList.add('active');
+}
+
+// Fallback HTTP poll when WS not available
+async function fallbackAircraftPoll() {
+  if (!wsAcConn) {
+    try {
+      const r = await fetch(`${API}/aircraft`);
+      const d = await r.json();
+      processAircraftData(d.aircraft || []);
+    } catch(e) {}
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  initMap();
+  initOscilloscope();
+  connectWsAircraft();
+  connectWsOscilloscope();
+
+  pollSystemStatus();
+  pollLLMStatus();
+  pollLearnStats();
+
+  setInterval(pollSystemStatus, 5000);
+  setInterval(pollLLMStatus, 10000);
+  setInterval(pollLearnStats, 15000);
+  setInterval(fallbackAircraftPoll, 3000);
+
+  // Initial gain/noise load
+  fetch(`${API}/api/v1/gain/current`).then(r=>r.json()).then(d=>{
+    if(d.gain_db != null) { document.getElementById('gainSlider').value = d.gain_db; onGainChange(d.gain_db); }
+  }).catch(()=>{});
+  fetch(`${API}/api/v1/noise/threshold`).then(r=>r.json()).then(d=>{
+    if(d.threshold_dbm != null) setNoiseUI(d.threshold_dbm);
+  }).catch(()=>{});
+});
+</script>
+</body>
+</html>

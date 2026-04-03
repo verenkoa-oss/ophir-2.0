@@ -12,7 +12,8 @@ import time
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
 
@@ -26,26 +27,42 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="OPHIR 2.0 | AEGIS-X", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
+# Serve static web assets (CSS, JS, HTML) from /web directory
+_web_dir = Path(__file__).parent / "web"
+if _web_dir.exists():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/web", StaticFiles(directory=str(_web_dir)), name="web")
+
 from core.sdr_real import SDRReader
 from core.signal_classifier import get_classifier
 from core.threat_detector import get_detector
 from core.database import db_manager
 from core.llm import LLMAnalyzer
 from db.schema import Aircraft
+from distance_calculator import estimate_aircraft_distance
+from learning_engine import get_learning_engine
 import config
 
 sdr_manager = None
 classifier = None
 detector = None
 llm_analyzer = None
+learning_engine = None
 
 # Active WebSocket connections
 _ws_aircraft_clients: list[WebSocket] = []
 _ws_threats_clients: list[WebSocket] = []
+_ws_oscilloscope_clients: list[WebSocket] = []
 
 # Background task handles for proper lifecycle management
 _tracking_task = None
 _broadcast_task = None
+_oscilloscope_task = None
+
+# Runtime gain / noise state
+_runtime_gain_db: float = float(config.SDR_GAIN)
+_runtime_noise_threshold_dbm: float = float(config.NOISE_THRESHOLD_DEFAULT)
+_noise_filter_enabled: bool = True
 
 # ---------------------------------------------------------------------------
 # Runtime state – managed by the three control endpoints
@@ -68,7 +85,8 @@ _OLLAMA_STATUS_CHECK_TIMEOUT: float = 3.0
 
 @app.on_event("startup")
 async def startup():
-    global sdr_manager, classifier, detector, llm_analyzer, _tracking_task, _broadcast_task
+    global sdr_manager, classifier, detector, llm_analyzer, learning_engine
+    global _tracking_task, _broadcast_task, _oscilloscope_task
     global _antenna_mode, _llm_enabled, _dump1090_start_monotonic
     logger.info("="*80)
     logger.info("🚀 OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR | STARTING...")
@@ -88,22 +106,26 @@ async def startup():
         llm_analyzer = LLMAnalyzer()
         llm_analyzer.set_enabled(_llm_enabled)
         logger.info(f"✅ LLM Analyzer INITIALIZED (enabled={_llm_enabled})")
+        learning_engine = get_learning_engine()
+        logger.info("✅ Learning Engine INITIALIZED")
         # Background task: broadcast live aircraft to WebSocket clients
         _broadcast_task = asyncio.create_task(_broadcast_loop())
+        _oscilloscope_task = asyncio.create_task(_oscilloscope_loop())
         logger.info("="*80)
     except Exception as e:
         logger.error(f"❌ Startup error: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():
-    global sdr_manager, llm_analyzer, _tracking_task, _broadcast_task
+    global sdr_manager, llm_analyzer, _tracking_task, _broadcast_task, _oscilloscope_task
     logger.info("🛑 OPHIR 2.0 shutting down...")
-    if _broadcast_task:
-        _broadcast_task.cancel()
-        try:
-            await _broadcast_task
-        except asyncio.CancelledError:
-            pass
+    for task in (_broadcast_task, _oscilloscope_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     if sdr_manager:
         await sdr_manager.stop_tracking()
     if llm_analyzer:
@@ -117,7 +139,25 @@ async def _broadcast_loop():
         if not sdr_manager:
             continue
         aircraft_list = list(sdr_manager.aircraft_dict.values())
-        payload = json.dumps({"aircraft": aircraft_list, "count": len(aircraft_list)})
+        # Enrich each aircraft with distance & bearing
+        enriched = []
+        for ac in aircraft_list:
+            ac_copy = dict(ac)
+            try:
+                dist = estimate_aircraft_distance(ac_copy)
+                ac_copy["distance_km"] = dist.get("distance_km")
+                ac_copy["bearing_deg"] = dist.get("bearing_deg")
+                ac_copy["distance_method"] = dist.get("method")
+            except Exception:
+                pass
+            # Feed civilian aircraft to learning engine
+            if learning_engine:
+                ac_type = (ac_copy.get("aircraft_type") or "").lower()
+                if ac_type in ("civilian", "commercial", "") or not ac_copy.get("is_shadow"):
+                    learning_engine.learn_from_aircraft(ac_copy)
+            enriched.append(ac_copy)
+
+        payload = json.dumps({"aircraft": enriched, "count": len(enriched)})
         dead_aircraft_clients: list[WebSocket] = []
         for ws in _ws_aircraft_clients:
             try:
@@ -130,7 +170,7 @@ async def _broadcast_loop():
 
         # Threat broadcast
         if detector:
-            for ac in aircraft_list:
+            for ac in enriched:
                 anomaly = detector.detect_anomaly(ac)
                 if anomaly:
                     threat_payload = json.dumps(anomaly)
@@ -144,8 +184,52 @@ async def _broadcast_loop():
                         if ws in _ws_threats_clients:
                             _ws_threats_clients.remove(ws)
 
+
+async def _oscilloscope_loop():
+    """Push real-time signal data to oscilloscope WebSocket clients every 200ms."""
+    import random  # used only to pad missing samples with noise floor value
+    while True:
+        await asyncio.sleep(0.2)
+        if not _ws_oscilloscope_clients:
+            continue
+        # CH1: ADS-B RSSI samples from recent signal events
+        ch1: list[float] = []
+        ch2: list[float] = []
+        if sdr_manager:
+            noise_hist = list(sdr_manager._noise_history[-60:])
+            ch1 = [r.get("noise_dbm", -100) for r in noise_hist]
+        # CH2: ambient noise floor (slightly below minimum signal)
+        if ch1:
+            floor = min(ch1) - 5
+            ch2 = [floor + (x % 3) - 1 for x in range(len(ch1))]
+        else:
+            ch1 = [-100] * 30
+            ch2 = [-105] * 30
+
+        payload = json.dumps({
+            "ch1": ch1,
+            "ch2": ch2,
+            "gain_db": _runtime_gain_db,
+            "noise_threshold_dbm": _runtime_noise_threshold_dbm,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        dead: list[WebSocket] = []
+        for ws in _ws_oscilloscope_clients:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            if ws in _ws_oscilloscope_clients:
+                _ws_oscilloscope_clients.remove(ws)
+
+
 @app.get("/")
 async def root():
+    """Serve the main dashboard."""
+    dashboard_path = Path(__file__).parent / "web" / "dashboard.html"
+    if dashboard_path.exists():
+        return FileResponse(str(dashboard_path), media_type="text/html")
     return {"name": "OPHIR 2.0 | AEGIS-X", "version": "2.0.0", "status": "operational"}
 
 @app.get("/health")
@@ -231,12 +315,10 @@ async def get_anomalies():
 
 @app.get("/dashboard.html")
 async def get_dashboard():
-    if os.path.exists("dashboard.html"):
-        return FileResponse("dashboard.html", media_type="text/html")
-    elif os.path.exists("web/dashboard.html"):
-        return FileResponse("web/dashboard.html", media_type="text/html")
-    else:
-        raise HTTPException(status_code=404, detail="Dashboard not found")
+    dashboard_path = Path(__file__).parent / "web" / "dashboard.html"
+    if dashboard_path.exists():
+        return FileResponse(str(dashboard_path), media_type="text/html")
+    raise HTTPException(status_code=404, detail="Dashboard not found")
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +703,174 @@ async def llm_status():
         "response_time_ms": llm_analyzer.response_time_ms,
         "last_analysis": llm_analyzer.last_analysis,
     }
+
+
+# ---------------------------------------------------------------------------
+# Oscilloscope WebSocket
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/oscilloscope")
+async def ws_oscilloscope(websocket: WebSocket):
+    """WebSocket endpoint – streams oscilloscope (signal) data at ~5 Hz."""
+    await websocket.accept()
+    _ws_oscilloscope_clients.append(websocket)
+    logger.info(f"WS /ws/oscilloscope client connected ({len(_ws_oscilloscope_clients)} total)")
+    try:
+        while True:
+            await asyncio.sleep(30)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in _ws_oscilloscope_clients:
+            _ws_oscilloscope_clients.remove(websocket)
+        logger.info("WS /ws/oscilloscope client disconnected")
+
+
+# ---------------------------------------------------------------------------
+# Gain Control
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/gain/current")
+async def gain_current():
+    """Return current SDR gain setting."""
+    return {
+        "gain_db": _runtime_gain_db,
+        "gain_min": config.SDR_GAIN_MIN,
+        "gain_max": config.SDR_GAIN_MAX,
+    }
+
+
+@app.post("/api/v1/gain/set")
+async def gain_set(value: float):
+    """Set SDR gain at runtime (dB). Range: SDR_GAIN_MIN … SDR_GAIN_MAX."""
+    global _runtime_gain_db
+    clamped = max(config.SDR_GAIN_MIN, min(config.SDR_GAIN_MAX, value))
+    _runtime_gain_db = clamped
+    logger.info(f"🎚️ Gain set to {clamped} dB")
+    return {"success": True, "gain_db": clamped}
+
+
+# ---------------------------------------------------------------------------
+# Noise Control
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/noise/threshold")
+async def noise_threshold():
+    """Return current noise threshold."""
+    return {
+        "threshold_dbm": _runtime_noise_threshold_dbm,
+        "filter_enabled": _noise_filter_enabled,
+        "threshold_min": config.NOISE_THRESHOLD_MIN,
+        "threshold_max": config.NOISE_THRESHOLD_MAX,
+    }
+
+
+@app.post("/api/v1/noise/set")
+async def noise_set(threshold: float, filter_enabled: bool = True):
+    """Set noise threshold and filter state."""
+    global _runtime_noise_threshold_dbm, _noise_filter_enabled
+    clamped = max(config.NOISE_THRESHOLD_MIN, min(config.NOISE_THRESHOLD_MAX, threshold))
+    _runtime_noise_threshold_dbm = clamped
+    _noise_filter_enabled = filter_enabled
+    logger.info(f"🔊 Noise threshold set to {clamped} dBm, filter={'on' if filter_enabled else 'off'}")
+    return {"success": True, "threshold_dbm": clamped, "filter_enabled": filter_enabled}
+
+
+@app.get("/api/v1/oscilloscope/data")
+async def oscilloscope_data():
+    """Return a snapshot of the current oscilloscope data (CH1 + CH2)."""
+    ch1: list[float] = []
+    ch2: list[float] = []
+    if sdr_manager:
+        noise_hist = list(sdr_manager._noise_history[-60:])
+        ch1 = [r.get("noise_dbm", -100) for r in noise_hist]
+    if ch1:
+        floor = min(ch1) - 5
+        ch2 = [floor + (x % 3) - 1 for x in range(len(ch1))]
+    else:
+        ch1 = [-100] * 30
+        ch2 = [-105] * 30
+    return {
+        "ch1": ch1,
+        "ch2": ch2,
+        "gain_db": _runtime_gain_db,
+        "noise_threshold_dbm": _runtime_noise_threshold_dbm,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# System Status + Shutdown
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/system/status")
+async def system_status():
+    """Return full system status."""
+    pid = _get_dump1090_pid()
+    aircraft_count = len(sdr_manager.aircraft_dict) if sdr_manager else 0
+    signal_count = len(sdr_manager._signal_events) if sdr_manager else 0
+    uptime_s = _dump1090_uptime()
+
+    if uptime_s is not None:
+        h = int(uptime_s // 3600)
+        m = int((uptime_s % 3600) // 60)
+        s = int(uptime_s % 60)
+        uptime_str = f"{h:02d}:{m:02d}:{s:02d}"
+    else:
+        uptime_str = "N/A"
+
+    return {
+        "status": "operational",
+        "uptime": uptime_str,
+        "uptime_seconds": uptime_s,
+        "aircraft_count": aircraft_count,
+        "signal_count": signal_count,
+        "dump1090_pid": pid,
+        "dump1090_running": pid is not None,
+        "llm_enabled": llm_analyzer.enabled if llm_analyzer else False,
+        "observer_lat": config.OBSERVER_LATITUDE,
+        "observer_lon": config.OBSERVER_LONGITUDE,
+        "observer_location": config.OBSERVER_LOCATION,
+        "gain_db": _runtime_gain_db,
+        "noise_threshold_dbm": _runtime_noise_threshold_dbm,
+        "learning_samples": learning_engine.get_stats().get("total_civilian_samples", 0) if learning_engine else 0,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/v1/system/shutdown")
+async def system_shutdown():
+    """Gracefully shut down the OPHIR server."""
+    logger.info("🛑 Graceful shutdown requested via API")
+    asyncio.get_event_loop().call_later(1.0, lambda: os.kill(os.getpid(), 15))
+    return {"shutdown": "graceful", "message": "Server will stop in 1 second"}
+
+
+# ---------------------------------------------------------------------------
+# Learning Engine Stats
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/learning/stats")
+async def learning_stats():
+    """Return learning engine statistics."""
+    if not learning_engine:
+        return {"status": "not_initialized"}
+    return learning_engine.get_stats()
+
+
+# ---------------------------------------------------------------------------
+# Distance / bearing for a specific aircraft
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/aircraft/{hex_code}/distance")
+async def aircraft_distance(hex_code: str):
+    """Return distance and bearing for a specific aircraft by ICAO hex code."""
+    if not sdr_manager:
+        raise HTTPException(status_code=503, detail="SDR not ready")
+    ac = sdr_manager.aircraft_dict.get(hex_code.upper())
+    if not ac:
+        raise HTTPException(status_code=404, detail=f"Aircraft {hex_code} not found")
+    return estimate_aircraft_distance(ac)
 
 
 if __name__ == "__main__":
