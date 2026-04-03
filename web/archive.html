@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OPHIR 2.0 Archive</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; }
+        body { background: #000; color: #0f0; font-family: monospace; overflow: hidden; }
+        #container { display: flex; height: 100vh; }
+        #map { flex: 1; background: #1a1a1a; }
+        #sidebar { width: 450px; background: rgba(0,0,0,0.95); border-left: 2px solid #0f0; padding: 15px; overflow-y: auto; }
+        h1 { color: #0f0; border-bottom: 2px solid #0f0; padding: 10px 0; margin-bottom: 15px; }
+        .stat { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #333; }
+        .label { color: #0f0; }
+        .value { color: #ffff00; font-weight: bold; }
+        button { background: #0f0; color: #000; border: none; padding: 8px 12px; margin: 5px 5px 5px 0; cursor: pointer; font-weight: bold; }
+        button:hover { background: #00cc00; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+        th { background: #1a1a1a; color: #0f0; padding: 8px; border: 1px solid #333; }
+        td { padding: 8px; border: 1px solid #333; }
+        tr:hover { background: #1a1a1a; }
+        .shadow { background: #4a0000; color: #ff6666; }
+        .mil { color: #ff8844; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="map"></div>
+        <div id="sidebar">
+            <h1>[ OPHIR 2.0 ARCHIVE ]</h1>
+            <div class="stat">
+                <span class="label">Total Aircraft:</span>
+                <span class="value" id="total">0</span>
+            </div>
+            <div class="stat">
+                <span class="label">Military:</span>
+                <span class="value" id="mil">0</span>
+            </div>
+            <div class="stat">
+                <span class="label">Shadows (No GPS):</span>
+                <span class="value" id="shadow">0</span>
+            </div>
+            <button onclick="filter('all')">All</button>
+            <button onclick="filter('mil')">Military</button>
+            <button onclick="filter('shadow')">Shadows</button>
+            <table>
+                <thead><tr><th>HEX</th><th>Callsign</th><th>Type</th><th>GPS</th></tr></thead>
+                <tbody id="tbody"></tbody>
+            </table>
+        </div>
+    </div>
+    <script>
+        const map = L.map('map').setView([31.9, 35.9], 8);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        
+        let data = [], filtered = [];
+        
+        async function load() {
+            try {
+                const r = await fetch('/api/v1/archive/aircraft');
+                data = await r.json();
+                filtered = data;
+                update();
+            } catch(e) {
+                console.log('API error:', e);
+            }
+        }
+        
+        function update() {
+            document.getElementById('total').textContent = filtered.length;
+            document.getElementById('mil').textContent = filtered.filter(a=>a.mil).length;
+            document.getElementById('shadow').textContent = filtered.filter(a=>!a.pos).length;
+            
+            const tbody = document.getElementById('tbody');
+            tbody.innerHTML = '';
+            filtered.forEach(ac => {
+                const tr = tbody.insertRow();
+                tr.className = !ac.pos ? 'shadow' : ac.mil ? 'mil' : '';
+                tr.innerHTML = `<td>${ac.hex}</td><td>${ac.callsign}</td><td>${ac.type}</td><td>${ac.pos?'✓':'✗'}</td>`;
+            });
+        }
+        
+        function filter(t) {
+            if (t === 'all') filtered = data;
+            else if (t === 'mil') filtered = data.filter(a=>a.mil);
+            else if (t === 'shadow') filtered = data.filter(a=>!a.pos);
+            update();
+        }
+        
+        load();
+    </script>
+</body>
+</html>
