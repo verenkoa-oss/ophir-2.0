@@ -1,50 +1,39 @@
-#!/usr/bin/env bash
-# OPHIR 2.0 – Linux / macOS launcher
-# Usage: ./start.sh
-# -------------------------------------------------------------------
-set -euo pipefail
+#!/bin/bash
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-# ---- Colour helpers ------------------------------------------------
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; NC='\033[0m'
-
-info()    { echo -e "${GREEN}[OPHIR]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[WARN ]${NC} $*"; }
-error_exit() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
-
-echo ""
-echo -e "${CYAN}=================================================${NC}"
-echo -e "${CYAN}  🛰  OPHIR 2.0 | AEGIS-X AIRSPACE MONITOR${NC}"
-echo -e "${CYAN}=================================================${NC}"
+echo "🚀 OPHIR 2.0 - AUTONOMOUS SYSTEM LAUNCHER"
+echo "=========================================="
 echo ""
 
-# ---- Python check --------------------------------------------------
-PYTHON="${PYTHON:-python3}"
-if ! command -v "$PYTHON" &>/dev/null; then
-    error_exit "python3 not found. Please install Python 3.9+"
-fi
-PY_VER=$("$PYTHON" -c "import sys; print(sys.version_info[:2])")
-info "Python: $("$PYTHON" --version) ($PY_VER)"
-
-# ---- Virtual environment (optional) --------------------------------
-if [ -d "venv" ]; then
-    info "Activating virtual environment …"
-    # shellcheck disable=SC1091
-    source venv/bin/activate
+# Check Python
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Python 3 not found!"
+    exit 1
 fi
 
-# ---- Install dependencies (if requirements.txt present) ------------
-if [ -f "requirements.txt" ]; then
-    info "Checking / installing dependencies …"
-    "$PYTHON" -m pip install -q -r requirements.txt || warn "pip install had warnings."
+# Check requirements.txt
+if [ ! -f "requirements.txt" ]; then
+    echo "❌ requirements.txt not found!"
+    exit 1
 fi
 
-# ---- Create required directories -----------------------------------
-mkdir -p logs db data/ophir_db data/ophir_cache data/ophir_archive
+# Install dependencies
+echo "📦 Installing dependencies..."
+if ! pip3 install -r requirements.txt; then
+    echo "❌ Failed to install dependencies!"
+    exit 1
+fi
 
-# ---- Start system --------------------------------------------------
-info "Launching OPHIR 2.0 …"
-exec "$PYTHON" run.py "$@"
+# Check dump1090
+if ! command -v dump1090-fa &> /dev/null && ! command -v dump1090 &> /dev/null; then
+    echo "⚠️  dump1090 not found - install with: apt-get install dump1090-fa"
+fi
+
+# Check Ollama
+if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+    echo "⚠️  Ollama not running - start with: ollama serve"
+fi
+
+# Run system
+echo ""
+echo "🚀 Starting OPHIR 2.0..."
+python3 run.py
