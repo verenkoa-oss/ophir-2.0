@@ -45,7 +45,7 @@ API_LOG_LEVEL = "info"
 
 DUMP1090_JSON_PATH = Path("/run/dump1090-mutability/data/aircraft.json")
 DUMP1090_HOST = "localhost"
-DUMP1090_PORT = 30001
+DUMP1090_PORT = 30003  # SBS BaseStation output port (MSG,... CSV format)
 DUMP1090_MODE = "basic"
 SDR_UPDATE_INTERVAL = 1.0
 
@@ -116,7 +116,7 @@ NOISE_THRESHOLD_MAX = -30
 LLM_ENABLED_DEFAULT = True
 ENABLE_LLM_ANALYSIS = True
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "mistral:latest"
+OLLAMA_MODEL = "llama2:7b"
 OLLAMA_TIMEOUT = 60.0
 
 # Distance calculator constants (Friis free-space path loss model for 1090 MHz ADS-B)
