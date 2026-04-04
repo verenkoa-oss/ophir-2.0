@@ -145,7 +145,7 @@ async def startup():
         if not connected:
             logger.error("❌ Failed to connect to dump1090 - check that dump1090 --net is running")
         else:
-            logger.info("✅ Connected to dump1090 - REAL DATA MODE (PORT 30001)")
+            logger.info(f"✅ Connected to dump1090 - REAL DATA MODE (PORT {config.DUMP1090_PORT})")
 
         # Apply the default antenna mode from config
         sdr_manager.set_antenna_mode(_antenna_mode)
@@ -153,7 +153,7 @@ async def startup():
         # Only record uptime reference if dump1090 is actually reachable
         if _get_dump1090_pid():
             _dump1090_start_monotonic = time.monotonic()
-        logger.info("✅ Connected to dump1090 - REAL DATA MODE (PORT 30001)")
+        logger.info(f"✅ Connected to dump1090 - REAL DATA MODE (PORT {config.DUMP1090_PORT})")
         classifier = get_classifier()
         logger.info("✅ AI Signal Classifier LOADED")
         detector = get_detector()

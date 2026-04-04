@@ -1,7 +1,7 @@
 """
 OPHIR SDR Real Module
 Extends core/sdr.py with live aircraft tracking, noise monitoring and signal events.
-Connects to dump1090 SBS format (TCP port 30001) and keeps a live aircraft_dict.
+Connects to dump1090 SBS format (TCP port 30003) and keeps a live aircraft_dict.
 """
 
 import asyncio
@@ -52,8 +52,8 @@ class SDRReader(_BaseSDRReader):
 
     def __init__(self):
         super().__init__()
-        # Use SBS text port (30001) instead of the raw-frame port
-        self.port = 30001
+        # Use port from config (SBS BaseStation output, default 30003)
+        self.port = config.DUMP1090_PORT
 
         # Live tracking state
         self.aircraft_dict: dict = {}

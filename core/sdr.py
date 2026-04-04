@@ -1,6 +1,6 @@
 """
 OPHIR SDR Module
-Reads ADS-B data from dump1090 via TCP SBS port (30001).
+Reads ADS-B data from dump1090 via TCP SBS port (30003).
 """
 
 import asyncio
