@@ -101,6 +101,7 @@ class OphirSystem:
                 logger.warning("⚠️ dump1090 not found - skipping")
                 return None
 
+            cmd = ['dump1090', '--raw', '--net', '--quiet']
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,

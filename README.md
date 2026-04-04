@@ -1,5 +1,7 @@
 # OPHIR 2.0 - Signal Intelligence System
 
+> 🇷🇺 **Новичок?** Читай полную пошаговую инструкцию по установке и очистке: [INSTALL_GUIDE.md](INSTALL_GUIDE.md)
+
 ## Quick Start
 
 ### Prerequisites
