@@ -152,7 +152,8 @@
   <div class="ctrl-group">
     <label>Gain</label>
     <input type="range" id="gain-slider" min="0" max="50" value="45"
-           oninput="document.getElementById('gain-val').textContent=this.value">
+           oninput="document.getElementById('gain-val').textContent=this.value"
+           onchange="setGain(this.value)">
     <span id="gain-val">45</span>
   </div>
   <div class="sep"></div>
@@ -539,6 +540,11 @@ async function setAntenna(mode) {
 
 async function toggleLLM() {
   try { await fetch(`${BASE}/api/v1/llm/toggle`, { method: 'POST' }); setTimeout(pollStatus, 400); }
+  catch (e) { console.warn(e); }
+}
+
+async function setGain(val) {
+  try { await fetch(`${BASE}/api/v1/gain/set?value=${val}`, { method: 'POST' }); }
   catch (e) { console.warn(e); }
 }
 
