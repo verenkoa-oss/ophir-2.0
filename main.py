@@ -112,17 +112,16 @@ _signals_processed: int = 0
 
 
 def _get_dump1090_pid() -> int | None:
-    """Return the PID of a running dump1090-basic (mutability) process, or None."""
-    for binary in ("dump1090", "dump1090-mutability"):
-        try:
-            result = subprocess.run(
-                ["pgrep", "-x", binary],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return int(result.stdout.strip().split()[0])
-        except Exception:
-            pass
+    """Return the PID of a running dump1090 process, or None if not found."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "dump1090"],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip().split()[0])
+    except Exception:
+        pass
     return None
 
 
