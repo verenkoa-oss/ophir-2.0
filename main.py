@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 import os
+import httpx
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,11 +97,11 @@ _ws_osc_clients: list[WebSocket] = []
 
 # Gain control (-5 … +40 dB, stored at runtime)
 _current_gain: float = float(config.SDR_GAIN)
-_runtime_gain_db: float = float(config.SDR_GAIN_DEFAULT)
+_runtime_gain_db: float = _current_gain  # alias used by gain/noise/status endpoints
 
 # Noise threshold / filter settings
-_noise_threshold_dbm: float = float(config.NOISE_THRESHOLD_DEFAULT)
-_runtime_noise_threshold_dbm: float = float(config.NOISE_THRESHOLD_DEFAULT)
+_noise_threshold_dbm: float = -75.0
+_runtime_noise_threshold_dbm: float = _noise_threshold_dbm  # alias used by endpoints
 _noise_filter_enabled: bool = True
 _noise_alert_enabled: bool = True
 _noise_show_events: bool = True
@@ -114,8 +115,15 @@ _signals_processed: int = 0
 def _get_dump1090_pid() -> int | None:
     """Return the PID of a running dump1090 process, or None if not found."""
     try:
+        # Try plain dump1090 / dump1090-mutability first (basic/mobile mode)
         result = subprocess.run(
             ["pgrep", "-x", "dump1090"],
+            capture_output=True, text=True, timeout=2
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip().split()[0])
+        result = subprocess.run(
+            ["pgrep", "-x", "dump1090-mutability"],
             capture_output=True, text=True, timeout=2
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -126,8 +134,10 @@ def _get_dump1090_pid() -> int | None:
 
 
 def _dump1090_uptime() -> float | None:
-    """Return seconds since dump1090 was last confirmed running, or None."""
+    """Return seconds since dump1090 was started, or None if not running."""
     if _dump1090_start_monotonic is None:
+        return None
+    if _get_dump1090_pid() is None:
         return None
     return time.monotonic() - _dump1090_start_monotonic
 
@@ -1017,9 +1027,10 @@ async def gain_current():
 @app.post("/api/v1/gain/set")
 async def gain_set(value: float):
     """Set SDR gain at runtime (dB). Range: SDR_GAIN_MIN … SDR_GAIN_MAX."""
-    global _runtime_gain_db
+    global _runtime_gain_db, _current_gain
     clamped = max(config.SDR_GAIN_MIN, min(config.SDR_GAIN_MAX, value))
     _runtime_gain_db = clamped
+    _current_gain = clamped
     logger.info(f"🎚️ Gain set to {clamped} dB")
     return {"success": True, "gain_db": clamped}
 
@@ -1042,9 +1053,10 @@ async def noise_threshold():
 @app.post("/api/v1/noise/set")
 async def noise_set(threshold: float, filter_enabled: bool = True):
     """Set noise threshold and filter state."""
-    global _runtime_noise_threshold_dbm, _noise_filter_enabled
+    global _runtime_noise_threshold_dbm, _noise_threshold_dbm, _noise_filter_enabled
     clamped = max(config.NOISE_THRESHOLD_MIN, min(config.NOISE_THRESHOLD_MAX, threshold))
     _runtime_noise_threshold_dbm = clamped
+    _noise_threshold_dbm = clamped
     _noise_filter_enabled = filter_enabled
     logger.info(f"🔊 Noise threshold set to {clamped} dBm, filter={'on' if filter_enabled else 'off'}")
     return {"success": True, "threshold_dbm": clamped, "filter_enabled": filter_enabled}
@@ -1147,13 +1159,55 @@ async def aircraft_distance(hex_code: str):
     return estimate_aircraft_distance(ac)
 
 
+
+
 # ---------------------------------------------------------------------------
-# dump1090 Management  (basic / mutability – NOT dump1090-fa)
+# LLM Control
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/llm/status")
+async def llm_status():
+    """Return LLM/Ollama connection status."""
+    enabled = llm_analyzer.enabled if llm_analyzer else False
+    connected = False
+    model = config.OLLAMA_MODEL
+    response_time_ms = None
+    if llm_analyzer and enabled:
+        try:
+            async with httpx.AsyncClient(timeout=_OLLAMA_STATUS_CHECK_TIMEOUT) as _c:
+                r = await _c.get(f"{config.OLLAMA_BASE_URL}/api/tags")
+                connected = r.status_code == 200
+        except Exception:
+            connected = False
+        response_time_ms = llm_analyzer.response_time_ms
+    return {
+        "llm_enabled": enabled,
+        "ollama_connected": connected,
+        "model": model,
+        "response_time_ms": response_time_ms,
+        "last_analysis": llm_analyzer.last_analysis if llm_analyzer else None,
+    }
+
+
+@app.post("/api/v1/llm/toggle")
+async def llm_toggle():
+    """Toggle LLM analysis on or off."""
+    global _llm_enabled
+    if not llm_analyzer:
+        raise HTTPException(status_code=503, detail="LLM not initialized")
+    _llm_enabled = not llm_analyzer.enabled
+    llm_analyzer.set_enabled(_llm_enabled)
+    logger.info(f"🤖 LLM toggled → {'enabled' if _llm_enabled else 'disabled'}")
+    return {"llm_enabled": _llm_enabled}
+
+
+# ---------------------------------------------------------------------------
+# dump1090 Control
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/dump1090/status")
-async def dump1090_status_endpoint():
-    """Return running status of the dump1090-basic process."""
+async def dump1090_status():
+    """Return dump1090 process status."""
     pid = _get_dump1090_pid()
     uptime_s = _dump1090_uptime()
     return {
@@ -1165,108 +1219,78 @@ async def dump1090_status_endpoint():
 
 @app.post("/api/v1/dump1090/start")
 async def dump1090_start():
-    """Start dump1090 basic (--net) if it is not already running."""
+    """Start dump1090 if not already running."""
     global _dump1090_start_monotonic
     if _get_dump1090_pid():
-        return {"success": False, "message": "dump1090 is already running"}
-    try:
-        subprocess.Popen(
-            ["dump1090", "--net", "--quiet"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        await asyncio.sleep(1.2)
-        pid = _get_dump1090_pid()
-        if pid:
-            _dump1090_start_monotonic = time.monotonic()
-            logger.info(f"✅ dump1090 started (PID {pid})")
-            return {"success": True, "pid": pid}
-        return {"success": False, "message": "dump1090 did not start – check binary path"}
-    except FileNotFoundError:
-        return {"success": False, "message": "dump1090 binary not found in PATH"}
-    except Exception as e:
-        logger.error(f"dump1090 start error: {e}")
-        return {"success": False, "message": "Failed to start dump1090 – see server log"}
+        return {"action": "start", "result": "already_running", "pid": _get_dump1090_pid()}
+    cmd = None
+    for binary in ["dump1090", "dump1090-mutability"]:
+        if subprocess.run(["which", binary], capture_output=True).returncode == 0:
+            cmd = [binary, "--raw", "--net", "--quiet"]
+            break
+    if not cmd:
+        raise HTTPException(status_code=503, detail="dump1090 binary not found")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _dump1090_start_monotonic = time.monotonic()
+    logger.info(f"▶ dump1090 started (PID {proc.pid})")
+    return {"action": "start", "result": "started", "pid": proc.pid}
 
 
 @app.post("/api/v1/dump1090/stop")
 async def dump1090_stop():
-    """Send SIGTERM to the running dump1090 process."""
+    """Stop the running dump1090 process."""
     global _dump1090_start_monotonic
     pid = _get_dump1090_pid()
     if not pid:
-        return {"success": False, "message": "dump1090 is not running"}
+        return {"action": "stop", "result": "not_running"}
     try:
-        import signal as _signal
-        os.kill(pid, _signal.SIGTERM)
+        os.kill(pid, 15)  # SIGTERM
         _dump1090_start_monotonic = None
-        logger.info(f"🛑 dump1090 stopped (PID {pid})")
-        return {"success": True, "stopped_pid": pid}
-    except Exception as e:
-        logger.error(f"dump1090 stop error: {e}")
-        return {"success": False, "message": "Failed to stop dump1090 – see server log"}
+        logger.info(f"■ dump1090 stopped (PID {pid})")
+        return {"action": "stop", "result": "stopped", "pid": pid}
+    except ProcessLookupError:
+        return {"action": "stop", "result": "not_running"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/v1/dump1090/restart")
 async def dump1090_restart():
-    """Stop then start dump1090 basic."""
-    stop_result = await dump1090_stop()
+    """Stop and restart dump1090."""
+    await dump1090_stop()
     await asyncio.sleep(_DUMP1090_RESTART_DELAY)
-    start_result = await dump1090_start()
-    return {"stop": stop_result, "start": start_result}
+    return await dump1090_start()
 
 
 # ---------------------------------------------------------------------------
-# LLM Control
+# Antenna Mode
 # ---------------------------------------------------------------------------
 
-@app.get("/api/v1/llm/status")
-async def llm_status_endpoint():
-    """Return LLM enabled state and Ollama connectivity."""
-    if not llm_analyzer:
-        return {"llm_enabled": False, "ollama_connected": False, "model": None}
-    # Lightweight connectivity check only when LLM is enabled
-    connected = llm_analyzer.ollama_connected
-    if llm_analyzer.enabled:
-        connected = await llm_analyzer.check_connection()
-    return {
-        "llm_enabled": llm_analyzer.enabled,
-        "ollama_connected": connected,
-        "model": config.OLLAMA_MODEL,
-    }
-
-
-@app.post("/api/v1/llm/toggle")
-async def llm_toggle():
-    """Toggle LLM analysis on/off at runtime."""
-    global _llm_enabled
-    if not llm_analyzer:
-        raise HTTPException(status_code=503, detail="LLM not initialized")
-    _llm_enabled = not llm_analyzer.enabled
-    llm_analyzer.set_enabled(_llm_enabled)
-    logger.info(f"🤖 LLM toggled → {'enabled' if _llm_enabled else 'disabled'}")
-    return {"llm_enabled": _llm_enabled}
-
-
-# ---------------------------------------------------------------------------
-# Antenna Mode Control
-# ---------------------------------------------------------------------------
-
-class _AntennaModeBody(BaseModel):
-    mode: config.AntennaMode
+class AntennaModeRequest(BaseModel):
+    mode: str
 
 
 @app.put("/api/v1/antenna/mode")
-async def set_antenna_mode(body: _AntennaModeBody):
-    """Switch antenna profile between GARAGE and AIR."""
+async def antenna_mode(req: AntennaModeRequest):
+    """Switch antenna mode between AIR and GARAGE."""
     global _antenna_mode
-    _antenna_mode = body.mode
-    if sdr_manager:
-        sdr_manager.set_antenna_mode(body.mode)
-    logger.info(f"📡 Antenna mode → {body.mode}")
-    return {"antenna_mode": body.mode, "success": True}
+    mode_upper = req.mode.upper()
+    try:
+        new_mode = config.AntennaMode(mode_upper)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown antenna mode: {req.mode}")
+    _antenna_mode = new_mode
+    profile = config.ANTENNA_PROFILES.get(new_mode, {})
+    if sdr_manager and hasattr(sdr_manager, "set_antenna_mode"):
+        sdr_manager.set_antenna_mode(new_mode)
+    logger.info(f"📡 Antenna mode set to {new_mode.value}")
+    return {
+        "antenna_mode": new_mode.value,
+        "profile": profile,
+    }
 
 
-if __name__ == "__main__":
+
     logger.info("🚀 Starting OPHIR 2.0 Server")
     logger.info(f"📡 Observer location: {config.OBSERVER_LAT}, {config.OBSERVER_LON}")
     logger.info("📡 Listening on http://0.0.0.0:8080")
