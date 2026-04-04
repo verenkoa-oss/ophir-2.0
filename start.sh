@@ -23,9 +23,9 @@ if ! pip3 install -r requirements.txt; then
     exit 1
 fi
 
-# Check dump1090
-if ! command -v dump1090-fa &> /dev/null && ! command -v dump1090 &> /dev/null; then
-    echo "⚠️  dump1090 not found - install with: apt-get install dump1090-fa"
+# Check dump1090 (basic/mutability only — dump1090-fa is not supported)
+if ! command -v dump1090 &> /dev/null; then
+    echo "⚠️  dump1090 not found - install with: sudo apt-get install dump1090-mutability"
 fi
 
 # Check Ollama

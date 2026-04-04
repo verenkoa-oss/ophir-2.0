@@ -90,13 +90,12 @@ class OphirSystem:
         logger.info("📡 Starting dump1090 (BASIC mode)...")
 
         try:
-            # Check if dump1090-fa or dump1090 is available
+            # Check if dump1090 (basic/mutability) is available
+            # NOTE: only basic (dump1090 / dump1090-mutability) is supported;
+            #       dump1090-fa is intentionally not used.
             cmd = None
-            if subprocess.run(['which', 'dump1090-fa'],
+            if subprocess.run(['which', 'dump1090'],
                               capture_output=True).returncode == 0:
-                cmd = ['dump1090-fa', '--raw', '--net', '--quiet']
-            elif subprocess.run(['which', 'dump1090'],
-                                capture_output=True).returncode == 0:
                 cmd = ['dump1090', '--raw', '--net', '--quiet']
             else:
                 logger.warning("⚠️ dump1090 not found - skipping")

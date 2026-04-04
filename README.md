@@ -4,7 +4,7 @@
 
 ### Prerequisites
 - Python 3.8+
-- dump1090 or dump1090-fa
+- dump1090 or dump1090-mutability (**basic / mobile** mode only)
 - Ollama (for LLM analysis)
 - WiFi network
 
@@ -63,7 +63,7 @@ Press Ctrl+C in terminal for graceful shutdown.
 - Backend: FastAPI + WebSocket
 - Frontend: Vanilla JS + Leaflet + Chart.js
 - LLM: Ollama (mistral:latest)
-- SDR: dump1090-fa (BASIC mode)
+- SDR: dump1090 / dump1090-mutability (**BASIC / MOBILE** mode)
 - Database: SQLite
 
 ## Network
@@ -101,5 +101,7 @@ This means **zero Actions minutes are consumed** and there is nothing to pay for
 ## Support
 
 For issues or questions, create GitHub issue.
+
+📖 **Инструкция на русском (step-by-step для новичка):** [SETUP_RU.md](SETUP_RU.md)
 
 For information on checking your GitHub subscription status (Pro/Free), billing plan, payment history and plan limits, see [GITHUB_BILLING.md](GITHUB_BILLING.md).
