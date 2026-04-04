@@ -113,13 +113,6 @@ def _get_dump1090_pid() -> int | None:
     """Return the PID of a running dump1090 process, or None if not found."""
     try:
         result = subprocess.run(
-            ["pgrep", "-x", "dump1090-fa"],
-            capture_output=True, text=True, timeout=2
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip().split()[0])
-        # Also try the plain dump1090 binary name
-        result = subprocess.run(
             ["pgrep", "-x", "dump1090"],
             capture_output=True, text=True, timeout=2
         )

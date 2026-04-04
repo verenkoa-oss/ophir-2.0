@@ -4,7 +4,7 @@
 
 ### Prerequisites
 - Python 3.8+
-- dump1090 or dump1090-fa
+- dump1090
 - Ollama (for LLM analysis)
 - WiFi network
 
@@ -63,7 +63,7 @@ Press Ctrl+C in terminal for graceful shutdown.
 - Backend: FastAPI + WebSocket
 - Frontend: Vanilla JS + Leaflet + Chart.js
 - LLM: Ollama (mistral:latest)
-- SDR: dump1090-fa (BASIC mode)
+- SDR: dump1090 (BASIC mode)
 - Database: SQLite
 
 ## Network

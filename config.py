@@ -46,6 +46,7 @@ API_LOG_LEVEL = "info"
 DUMP1090_JSON_PATH = Path("/run/dump1090-mutability/data/aircraft.json")
 DUMP1090_HOST = "localhost"
 DUMP1090_PORT = 30001
+# Allowed dump modes: "basic" (standard dump1090) or "mobile" (dump1090-mutability)
 DUMP1090_MODE = "basic"
 SDR_UPDATE_INTERVAL = 1.0
 
