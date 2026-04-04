@@ -460,15 +460,17 @@ async def analyze_aircraft(req: AnalyzeRequest):
     """Analyse aircraft data with the local LLM."""
     analysis_text = "Analysis unavailable"
     try:
-        from core.llm import LLMAnalyzer
-        llm = LLMAnalyzer()
-        await llm.init()
-        raw = await llm.analyze_anomaly(
+        if not llm_analyzer:
+            return {
+                "hex_code": req.hex_code,
+                "analysis": "LLM not initialized",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        raw = await llm_analyzer.analyze_anomaly(
             req.hex_code,
             req.anomaly_type,
             req.aircraft_data or {},
         )
-        await llm.close()
         # Only surface the result when it is clearly a successful LLM response
         # (not an internal error message that may embed exception details).
         if raw and not raw.startswith(("Error:", "Analysis failed", "Analysis timeout")):

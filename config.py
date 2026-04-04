@@ -118,7 +118,6 @@ ENABLE_LLM_ANALYSIS = True
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "mistral:latest"
 OLLAMA_TIMEOUT = 60.0
-LLM_ENABLED_DEFAULT = True
 
 # Distance calculator constants (Friis free-space path loss model for 1090 MHz ADS-B)
 DISTANCE_FREQ_HZ = 1_090_000_000.0   # 1090 MHz
