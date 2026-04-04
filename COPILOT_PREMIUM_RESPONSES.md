@@ -32,10 +32,16 @@ GitHub Copilot использует разные AI-модели:
 
 | Тип запроса | Модель | Лимит |
 |-------------|--------|-------|
-| **Premium** (дорогие) | Claude Opus 4.6, Claude Sonnet, GPT-4o, Gemini и др. | **300 запросов в месяц** (Copilot Individual/Pro) |
-| **Базовые** (бесплатные) | Модель по умолчанию (выбирается автоматически) | ♾️ Безлимитно |
+| **Premium** | Claude Sonnet 4.6 | Тратит квоту |
+| **Premium** | Claude Opus 4.6 *(самая дорогая)* | Тратит квоту |
+| **Premium** | GPT-5.2 | Тратит квоту |
+| **Premium** | GPT-5.3 | Тратит квоту |
+| **Premium** | GPT-5.4 | Тратит квоту |
 
-При обычных автодополнениях (подсказки кода в редакторе) Copilot использует базовую модель и **не тратит premium-запросы**.  
+> ⚠️ **Важно:** у тебя нет бесплатной ("базовой") модели — **все доступные модели являются premium**.  
+> Это значит, что **каждый запрос в Copilot Chat тратит квоту**, независимо от выбранной модели.
+
+При обычных автодополнениях в редакторе (подсказки кода) Copilot может использовать более лёгкий движок и **не тратит premium-запросы**.  
 Premium-запросы тратятся в **Copilot Chat** и при запуске **Copilot Coding Agent** (агентные задачи).
 
 ---
@@ -57,8 +63,8 @@ Premium-запросы тратятся в **Copilot Chat** и при запус
 
 ### 2.2 Вопросы в Copilot Chat с продвинутыми моделями
 
-Если в настройках Copilot Chat выбрана модель **Claude Opus 4.6**, **GPT-4o** или другая premium — каждый вопрос тратит 1 premium-запрос.  
-Базовая модель (при режиме "Auto" — Copilot сам выберет не-premium модель) не входит в лимит.
+У тебя доступны только premium-модели (Claude Sonnet 4.6, Claude Opus 4.6, GPT-5.2, GPT-5.3, GPT-5.4) — **каждый вопрос в Chat тратит 1 premium-запрос**, независимо от выбора модели.  
+Claude Opus 4.6 может стоить дороже остальных (больше 1 запроса за сообщение).
 
 ### 2.3 Автоматические анализы кода (Code Review)
 
@@ -107,12 +113,14 @@ https://github.com/settings/billing/spending_limits
 
 | Ситуация | Опасность |
 |----------|-----------|
-| Закончились premium-запросы | ⚠️ Низкая — Copilot переключится на базовую (не-premium) модель |
-| Базовая модель хуже premium | ✅ Допустимо — для большинства задач достаточно |
+| Закончились premium-запросы | ⚠️ Средняя — Copilot Chat перестаёт отвечать (нет бесплатной базовой модели) |
+| Все доступные модели — premium | ⚠️ Каждый Chat-запрос тратит квоту; экономь на выборе модели |
 | Git push/pull/merge заблокируется | ❌ НЕТ — это никак не связано с Copilot квотой |
 | Потеряешь доступ к коду | ❌ НЕТ — код хранится независимо от AI |
 
-**Короткий ответ: это НЕ опасно.** Исчерпание premium-запросов означает только то, что Copilot Chat будет отвечать через базовую (не-premium) модель до начала следующего месяца. Твой код, репозиторий и git-работа продолжают работать без ограничений.
+**Короткий ответ: для кода — НЕ опасно, но для Copilot Chat — важно.**  
+У тебя нет бесплатной базовой модели, поэтому при исчерпании квоты Copilot Chat перестанет отвечать до обнуления.  
+Твой код, репозиторий и git-работа продолжают работать без ограничений — это никак не связано с AI-квотой.
 
 ### 3.3 Как предотвратить быстрый расход квоты
 
@@ -122,15 +130,20 @@ https://github.com/settings/billing/spending_limits
 - Объединяй несколько вопросов в одно сообщение
 - Используй агент только для больших задач, а простые делай вручную или через обычный чат
 
-**Рекомендация 2 — Переключись на базовую модель в настройках**
+**Рекомендация 2 — Выбирай более лёгкую модель в настройках**
 
-В Copilot Chat нажми на выпадающее меню модели (написано "Auto" на скриншоте).  
-У тебя доступна модель **Claude Opus 4.6** — она считается **premium** и тратит квоту.
+У тебя все модели premium, но их стоимость отличается:
 
-Чтобы сэкономить:
-- Не выбирай вручную дорогие модели (Claude Opus 4.6, GPT-4o и т.п.)
-- Режим **Auto** — Copilot сам решает, когда использовать premium; в целом экономнее, чем ручной выбор дорогой модели
-- Если Copilot предлагает выбрать модель — выбирай ту, которая **не помечена как premium**
+| Модель | Стоимость (ориентировочно) | Рекомендация |
+|--------|---------------------------|--------------|
+| Claude Sonnet 4.6 | Меньше | ✅ Использовать для повседневных задач |
+| GPT-5.2 | Меньше | ✅ Хорошая экономия |
+| GPT-5.3 | Средняя | ✅ Баланс качества и экономии |
+| GPT-5.4 | Больше | ⚠️ Только для сложных задач |
+| Claude Opus 4.6 | Больше всего | ⚠️ Только для самых сложных задач |
+
+Вывод: **не используй Opus 4.6 для простых вопросов** — он тратит квоту быстрее всего.  
+Для большинства задач хватает **Claude Sonnet 4.6** или **GPT-5.2**.
 
 **Рекомендация 3 — Отключи pay-as-you-go**
 
@@ -150,7 +163,7 @@ https://github.com/settings/billing/spending_limits
 
 | Что продолжит работать | Что изменится |
 |------------------------|--------------|
-| ✅ git push / pull / fetch / clone | ⚠️ Copilot Chat переключится на базовую (не-premium) модель |
+| ✅ git push / pull / fetch / clone | ❌ Copilot Chat перестаёт отвечать (нет бесплатной замены) |
 | ✅ Хранение кода и репозитория | ⚠️ Агентные задачи могут быть недоступны |
 | ✅ Issues, Pull Requests, Wiki | ⚠️ Copilot код-дополнения в IDE — будут использовать базовую модель |
 | ✅ Весь GitHub кроме Copilot AI | ❌ Copilot Workspace (агент) недоступен до обнуления |
@@ -163,10 +176,10 @@ https://github.com/settings/billing/spending_limits
 
 **Вариант 2 — Использовать базовую модель**
 
-Copilot Chat продолжает работать на базовой модели:
-- Оставь режим **Auto** — Copilot автоматически переключится на не-premium модель
-- Не выбирай вручную дорогие модели (Claude Opus 4.6 и др.)
-- Автодополнения в IDE продолжат работать
+У тебя нет бесплатной базовой модели, поэтому при нуле квоты Chat перестаёт работать.  
+Что всё равно продолжит работать:
+- Автодополнения кода в IDE (VS Code и др.) — они не используют Chat-квоту
+- Все git-операции — push, pull, fetch, merge
 
 **Вариант 3 — Докупить запросы (pay-as-you-go)**
 
@@ -196,29 +209,29 @@ git push  # работает всегда, независимо от Copilot к�
 
 | Вопрос | Ответ |
 |--------|-------|
-| Что за лимит на скриншоте? | Copilot premium responses (AI-запросы к Claude/GPT-4o) |
+| Что за лимит на скриншоте? | Copilot premium responses (Claude Sonnet/Opus 4.6, GPT-5.2/5.3/5.4) |
 | Сколько бесплатно в месяц? | 300 запросов (Copilot Individual/Pro за $10) |
 | Когда обновляется? | 1-е число каждого месяца |
 | Это опасно для разработки? | Нет — git и код не затронуты |
 | Почему расходуется без моих действий? | Агентные задачи Copilot (каждая = много запросов) |
 | Как проверить остаток? | https://github.com/settings/copilot |
-| Как сэкономить? | Не выбирать premium-модели вручную (Claude Opus 4.6 и др.), оставить "Auto" |
-| Что делать при 0% остатка? | Ждать 1-го числа или продолжать использовать базовую модель |
+| Как сэкономить? | Использовать Claude Sonnet 4.6 или GPT-5.2 вместо Opus 4.6/GPT-5.4 для простых задач |
+| Что делать при 0% остатка? | Ждать 1-го числа; Chat не работает, но IDE-автодополнения и git — работают |
 
 ---
 
 ## 🇬🇧 English Summary
 
-**What the screenshot shows:** The notification "You have used 80% of your premium responses this month" appears in **GitHub Copilot Chat** and refers to the monthly quota of **premium AI model requests** (Claude Opus 4.6, Claude Sonnet, GPT-4o, Gemini, etc.). This is **not** related to git, storage, Actions, or any other GitHub resource.
+**What the screenshot shows:** The notification "You have used 80% of your premium responses this month" appears in **GitHub Copilot Chat** and refers to the monthly quota of **premium AI model requests**. Available models: Claude Sonnet 4.6, Claude Opus 4.6, GPT-5.2, GPT-5.3, GPT-5.4 — **all are premium**, there is no free base model. This is **not** related to git, storage, Actions, or any other GitHub resource.
 
 **Why it decreased:** Each **Copilot agent session** (Copilot Coding Agent / background tasks) consumes 10–80 premium requests. The history shows several confirmed agent sessions which explains the 20% drop.
 
-**Is it dangerous?** No. When premium requests run out, Copilot Chat switches to the base (non-premium) model. Git push/pull/merge continue to work normally — they are completely unrelated to Copilot quotas.
+**Is it dangerous?** For code — no. For Copilot Chat — important: since there is no free base model, Chat stops working when quota hits 0. Git push/pull/merge continue to work normally — completely unrelated to Copilot quotas. IDE code completions also continue to work.
 
 **What to do:**
 - **Check remaining quota:** https://github.com/settings/copilot
-- **Save quota:** Avoid manually selecting premium models (Claude Opus 4.6, etc.); leave "Auto" mode on
-- **If quota reaches 0%:** Wait for monthly reset (1st of next month) or continue using the base model
+- **Save quota:** Use Claude Sonnet 4.6 or GPT-5.2 for routine tasks; reserve Claude Opus 4.6 / GPT-5.4 only for complex ones
+- **If quota reaches 0%:** Wait for monthly reset (1st of next month); IDE completions and git still work
 - **Disable pay-as-you-go:** https://github.com/settings/billing/spending_limits (to avoid unexpected charges)
 
 ---
